@@ -12,6 +12,21 @@ import type {
   Tile,
 } from "./types";
 
+export interface SpecialPlacement {
+  position: Position;
+  kind: Tile["kind"];
+  special: SpecialKind;
+}
+
+export interface ResolveStep {
+  chain: number;
+  clearedTiles: ClearedTile[];
+  specialPlacements: SpecialPlacement[];
+  collected: CountByTile;
+  terrainCreated: CountByTerrain;
+  scoreGained: number;
+}
+
 export interface ResolveSummary {
   accepted: boolean;
   chains: number;
@@ -19,6 +34,7 @@ export interface ResolveSummary {
   collected: CountByTile;
   terrainCreated: CountByTerrain;
   specialsCreated: number;
+  steps: ResolveStep[];
 }
 
 export class BoardResolver {
@@ -58,11 +74,24 @@ export class BoardResolver {
       const specialPlacements = this.pickSpecialPlacements(matches, preferredSpecialPositions);
       const clearMap = this.buildClearMap(matches, specialPlacements, season);
       const clearedTiles = [...clearMap.values()];
+      const stepCollected: CountByTile = {};
+      const stepTerrainCreated = this.terrainSystem.applyClears(this.board, clearedTiles, season);
+      const stepScore =
+        this.scoreFor(clearedTiles.length, chain, season) + specialPlacements.length * 120;
 
+      this.addCollected(stepCollected, clearedTiles);
       this.addCollected(summary.collected, clearedTiles);
-      this.addTerrain(summary.terrainCreated, this.terrainSystem.applyClears(this.board, clearedTiles, season));
+      this.addTerrain(summary.terrainCreated, stepTerrainCreated);
       summary.specialsCreated += specialPlacements.length;
-      summary.scoreGained += this.scoreFor(clearedTiles.length, chain, season) + specialPlacements.length * 120;
+      summary.scoreGained += stepScore;
+      summary.steps.push({
+        chain,
+        clearedTiles,
+        specialPlacements,
+        collected: stepCollected,
+        terrainCreated: stepTerrainCreated,
+        scoreGained: stepScore,
+      });
 
       this.board.clearPositions(clearedTiles.map((cleared) => cleared.position));
 
@@ -256,7 +285,7 @@ export class BoardResolver {
       collected: {},
       terrainCreated: {},
       specialsCreated: 0,
+      steps: [],
     };
   }
 }
-
