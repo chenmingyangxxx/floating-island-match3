@@ -426,27 +426,40 @@ export class LevelScene extends Phaser.Scene {
 
     const deltaX = pointer.x - candidate.x;
     const deltaY = pointer.y - candidate.y;
-    const threshold = Math.max(12, this.cellSize * 0.16);
+    const distance = Math.hypot(deltaX, deltaY);
+    const tapSlop = Math.max(22, this.cellSize * 0.3);
+    const releasePosition = this.positionFromPoint(pointer.x, pointer.y);
 
-    if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < threshold) {
+    if (!releasePosition) {
+      this.selected = undefined;
+      this.renderBoard();
+      return;
+    }
+
+    if (distance < tapSlop || this.samePosition(releasePosition, candidate.position)) {
       this.handleTileClick(candidate.position);
       return;
     }
 
-    const target =
-      Math.abs(deltaX) > Math.abs(deltaY)
-        ? { x: candidate.position.x + Math.sign(deltaX), y: candidate.position.y }
-        : { x: candidate.position.x, y: candidate.position.y + Math.sign(deltaY) };
-
-    if (!this.board.inBounds(target) || !this.board.tileAt(target)) {
+    if (!this.board.areAdjacent(candidate.position, releasePosition) || !this.board.tileAt(releasePosition)) {
       this.selected = undefined;
-      this.flashCells([candidate.position], 0xd65050);
-      this.showPenaltyToast();
+      this.renderBoard();
       return;
     }
 
     this.selected = undefined;
-    void this.resolveMove(candidate.position, target);
+    void this.resolveMove(candidate.position, releasePosition);
+  }
+
+  private positionFromPoint(x: number, y: number): Position | undefined {
+    const boardX = Math.floor((x - this.boardOrigin.x) / this.cellSize);
+    const boardY = Math.floor((y - this.boardOrigin.y) / this.cellSize);
+    const position = { x: boardX, y: boardY };
+    return this.board.inBounds(position) ? position : undefined;
+  }
+
+  private samePosition(a: Position, b: Position): boolean {
+    return a.x === b.x && a.y === b.y;
   }
 
   private createSpecialMark(special: SpecialKind): Phaser.GameObjects.Graphics {
