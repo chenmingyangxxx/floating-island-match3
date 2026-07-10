@@ -67,51 +67,42 @@ export class BoardResolver {
     season: SeasonDefinition,
   ): ResolveSummary {
     const summary = this.emptySummary(true);
-    let matches = initialMatches;
-    let chain = 0;
+    const chain = 1;
+    const matches = initialMatches;
+    const specialPlacements = this.pickSpecialPlacements(matches, preferredSpecialPositions);
+    const clearMap = this.buildClearMap(matches, specialPlacements, season);
+    const clearedTiles = [...clearMap.values()];
+    const stepCollected: CountByTile = {};
+    const stepTerrainCreated = this.terrainSystem.applyClears(this.board, clearedTiles, season);
+    const stepScore = this.scoreFor(clearedTiles.length, chain, season) + specialPlacements.length * 120;
 
-    while (matches.length > 0 && chain < 12) {
-      chain += 1;
-      summary.chains = chain;
+    summary.chains = chain;
+    this.addCollected(stepCollected, clearedTiles);
+    this.addCollected(summary.collected, clearedTiles);
+    this.addTerrain(summary.terrainCreated, stepTerrainCreated);
+    summary.specialsCreated += specialPlacements.length;
+    summary.scoreGained += stepScore;
+    summary.steps.push({
+      chain,
+      matches,
+      clearedTiles,
+      specialPlacements,
+      collected: stepCollected,
+      terrainCreated: stepTerrainCreated,
+      scoreGained: stepScore,
+    });
 
-      const specialPlacements = this.pickSpecialPlacements(matches, preferredSpecialPositions);
-      const clearMap = this.buildClearMap(matches, specialPlacements, season);
-      const clearedTiles = [...clearMap.values()];
-      const stepCollected: CountByTile = {};
-      const stepTerrainCreated = this.terrainSystem.applyClears(this.board, clearedTiles, season);
-      const stepScore =
-        this.scoreFor(clearedTiles.length, chain, season) + specialPlacements.length * 120;
+    this.board.clearPositions(clearedTiles.map((cleared) => cleared.position));
 
-      this.addCollected(stepCollected, clearedTiles);
-      this.addCollected(summary.collected, clearedTiles);
-      this.addTerrain(summary.terrainCreated, stepTerrainCreated);
-      summary.specialsCreated += specialPlacements.length;
-      summary.scoreGained += stepScore;
-      summary.steps.push({
-        chain,
-        matches,
-        clearedTiles,
-        specialPlacements,
-        collected: stepCollected,
-        terrainCreated: stepTerrainCreated,
-        scoreGained: stepScore,
-      });
-
-      this.board.clearPositions(clearedTiles.map((cleared) => cleared.position));
-
-      for (const placement of specialPlacements) {
-        this.board.setTile(
-          placement.position,
-          this.board.createTile(placement.kind, placement.special),
-        );
-      }
-
-      this.board.refillColumns();
-      matches = MatchFinder.findMatches(this.board);
-      preferredSpecialPositions.length = 0;
+    for (const placement of specialPlacements) {
+      this.board.setTile(
+        placement.position,
+        this.board.createTile(placement.kind, placement.special),
+      );
     }
 
-    this.board.ensurePlayableBoard();
+    this.board.refillColumns();
+    this.board.stabilizeMatches();
     return summary;
   }
 

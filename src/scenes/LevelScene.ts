@@ -3,13 +3,11 @@ import { LEVELS } from "../data/levels";
 import { Board } from "../match3/Board";
 import { BoardResolver, type ResolveSummary, type ResolveStep } from "../match3/BoardResolver";
 import { GoalSystem } from "../match3/GoalSystem";
-import { MatchFinder } from "../match3/MatchFinder";
 import { SeasonSystem } from "../match3/SeasonSystem";
 import { TerrainSystem } from "../match3/TerrainSystem";
 import type {
   CountByTile,
   LevelConfig,
-  MatchGroup,
   Position,
   SpecialKind,
   Tile,
@@ -24,12 +22,6 @@ interface DragCandidate {
   position: Position;
   x: number;
   y: number;
-}
-
-interface SwapIntent {
-  from: Position;
-  to: Position;
-  assisted: boolean;
 }
 
 const tileFeedbackColors: Record<TileKind, number> = {
@@ -434,7 +426,7 @@ export class LevelScene extends Phaser.Scene {
 
     const deltaX = pointer.x - candidate.x;
     const deltaY = pointer.y - candidate.y;
-    const threshold = Math.max(18, this.cellSize * 0.26);
+    const threshold = Math.max(12, this.cellSize * 0.16);
 
     if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < threshold) {
       this.handleTileClick(candidate.position);
@@ -454,146 +446,7 @@ export class LevelScene extends Phaser.Scene {
     }
 
     this.selected = undefined;
-    const intent = this.findSwapIntentForDrag(candidate.position, target, deltaX, deltaY);
-    if (intent.assisted) {
-      this.flashCells([candidate.position, intent.from, intent.to], 0xfff0a6);
-    }
-    void this.resolveMove(intent.from, intent.to);
-  }
-
-  private findSwapIntentForDrag(
-    start: Position,
-    target: Position,
-    deltaX: number,
-    deltaY: number,
-  ): SwapIntent {
-    if (this.previewSwapGroups(start, target).length > 0) {
-      return {
-        from: start,
-        to: target,
-        assisted: false,
-      };
-    }
-
-    const dragAxis = Math.abs(deltaX) >= Math.abs(deltaY) ? "horizontal" : "vertical";
-    const direction = { x: Math.sign(deltaX), y: Math.sign(deltaY) };
-    const candidatePairs = this.localAssistedPairs(start);
-    let best: { intent: SwapIntent; score: number } | undefined;
-
-    for (const [from, to] of candidatePairs) {
-      const groups = this.previewSwapGroups(from, to);
-      const relevantGroups = groups.filter((group) => this.includesPosition(group.positions, start));
-      if (relevantGroups.length === 0) {
-        continue;
-      }
-
-      const pairCenter = {
-        x: (from.x + to.x) / 2,
-        y: (from.y + to.y) / 2,
-      };
-      const pairDirection = {
-        x: to.x - from.x,
-        y: to.y - from.y,
-      };
-      const matchPositions = this.uniquePositions(relevantGroups.flatMap((group) => group.positions));
-      const involvesTarget = this.samePosition(from, target) || this.samePosition(to, target);
-      const involvesStart = this.samePosition(from, start) || this.samePosition(to, start);
-      const matchIncludesTarget = this.includesPosition(matchPositions, target);
-      const axisMatched = relevantGroups.some((group) =>
-        group.runs.some((run) => run.direction === dragAxis && this.includesPosition(run.positions, start)),
-      );
-      const sameAxis =
-        (Math.abs(deltaX) >= Math.abs(deltaY) && Math.abs(pairDirection.x) === 1) ||
-        (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(pairDirection.y) === 1);
-      const swipeAligned =
-        (direction.x !== 0 && pairDirection.x * direction.x > 0) ||
-        (direction.y !== 0 && pairDirection.y * direction.y > 0);
-      const distance = Math.abs(pairCenter.x - start.x) + Math.abs(pairCenter.y - start.y);
-      const score =
-        (involvesStart ? 40 : 0) +
-        (involvesTarget ? 28 : 0) +
-        (matchIncludesTarget ? 18 : 0) +
-        (axisMatched ? 16 : 0) +
-        (sameAxis ? 12 : 0) +
-        (swipeAligned ? 8 : 0) -
-        distance * 6;
-
-      if (!best || score > best.score) {
-        best = {
-          intent: {
-            from,
-            to,
-            assisted: true,
-          },
-          score,
-        };
-      }
-    }
-
-    return best?.intent ?? {
-      from: start,
-      to: target,
-      assisted: false,
-    };
-  }
-
-  private previewSwapGroups(from: Position, to: Position): MatchGroup[] {
-    if (!this.board.areAdjacent(from, to) || !this.board.tileAt(from) || !this.board.tileAt(to)) {
-      return [];
-    }
-
-    this.board.swap(from, to);
-    const matches = MatchFinder.findMatches(this.board).filter((group) =>
-      group.positions.some((position) => this.samePosition(position, from) || this.samePosition(position, to)),
-    );
-    this.board.swap(from, to);
-    return matches;
-  }
-
-  private localAssistedPairs(start: Position): Array<[Position, Position]> {
-    const pairs: Array<[Position, Position]> = [];
-    const seen = new Set<string>();
-    const radius = 2;
-
-    for (let y = start.y - radius; y <= start.y + radius; y += 1) {
-      for (let x = start.x - radius; x <= start.x + radius; x += 1) {
-        const position = { x, y };
-        if (!this.board.inBounds(position) || !this.board.tileAt(position)) {
-          continue;
-        }
-
-        for (const candidate of [
-          { x: x + 1, y },
-          { x, y: y + 1 },
-        ]) {
-          if (!this.board.inBounds(candidate) || !this.board.tileAt(candidate)) {
-            continue;
-          }
-
-          if (
-            Math.max(Math.abs(candidate.x - start.x), Math.abs(candidate.y - start.y)) <= radius
-          ) {
-            const key = [this.board.keyOf(position), this.board.keyOf(candidate)].sort().join("|");
-            if (seen.has(key)) {
-              continue;
-            }
-
-            seen.add(key);
-            pairs.push([position, candidate]);
-          }
-        }
-      }
-    }
-
-    return pairs;
-  }
-
-  private includesPosition(positions: Position[], target: Position): boolean {
-    return positions.some((position) => this.samePosition(position, target));
-  }
-
-  private samePosition(a: Position, b: Position): boolean {
-    return a.x === b.x && a.y === b.y;
+    void this.resolveMove(candidate.position, target);
   }
 
   private createSpecialMark(special: SpecialKind): Phaser.GameObjects.Graphics {

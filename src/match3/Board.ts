@@ -186,6 +186,25 @@ export class Board {
     }
   }
 
+  stabilizeMatches(): void {
+    let attempts = 0;
+
+    while (this.hasAnyMatch() && attempts < 30) {
+      attempts += 1;
+
+      for (const position of this.matchPositions()) {
+        this.setTile(position, this.createTile(this.pickStableKind(position)));
+      }
+    }
+
+    if (this.hasAnyMatch()) {
+      this.clearAllTiles();
+      this.fillInitialTiles();
+    }
+
+    this.ensurePlayableBoard();
+  }
+
   private fillPlayableTiles(): void {
     this.fillInitialTiles();
     this.ensurePlayableBoard();
@@ -230,6 +249,103 @@ export class Board {
       (leftOne?.kind === kind && leftTwo?.kind === kind) ||
       (upOne?.kind === kind && upTwo?.kind === kind)
     );
+  }
+
+  private pickStableKind(position: Position): TileKind {
+    const shuffled = [...this.availableTiles].sort(() => Math.random() - 0.5);
+    return (
+      shuffled.find((kind) => !this.wouldCreateMatchAt(position, kind)) ??
+      this.availableTiles[Math.floor(Math.random() * this.availableTiles.length)]
+    );
+  }
+
+  private wouldCreateMatchAt(position: Position, kind: TileKind): boolean {
+    const horizontal =
+      1 +
+      this.countSameDirection(position, -1, 0, kind) +
+      this.countSameDirection(position, 1, 0, kind);
+    const vertical =
+      1 +
+      this.countSameDirection(position, 0, -1, kind) +
+      this.countSameDirection(position, 0, 1, kind);
+
+    return horizontal >= 3 || vertical >= 3;
+  }
+
+  private countSameDirection(position: Position, deltaX: number, deltaY: number, kind: TileKind): number {
+    let count = 0;
+    let x = position.x + deltaX;
+    let y = position.y + deltaY;
+
+    while (this.inBounds({ x, y }) && this.tileAt({ x, y })?.kind === kind) {
+      count += 1;
+      x += deltaX;
+      y += deltaY;
+    }
+
+    return count;
+  }
+
+  private matchPositions(): Position[] {
+    const seen = new Set<string>();
+    const positions: Position[] = [];
+    const add = (position: Position) => {
+      const key = this.keyOf(position);
+      if (!seen.has(key)) {
+        seen.add(key);
+        positions.push(position);
+      }
+    };
+
+    for (let y = 0; y < this.height; y += 1) {
+      let x = 0;
+      while (x < this.width) {
+        const start = x;
+        const kind = this.tileAt({ x, y })?.kind;
+        if (!kind) {
+          x += 1;
+          continue;
+        }
+
+        while (x + 1 < this.width && this.tileAt({ x: x + 1, y })?.kind === kind) {
+          x += 1;
+        }
+
+        if (x - start + 1 >= 3) {
+          for (let matchX = start; matchX <= x; matchX += 1) {
+            add({ x: matchX, y });
+          }
+        }
+
+        x += 1;
+      }
+    }
+
+    for (let x = 0; x < this.width; x += 1) {
+      let y = 0;
+      while (y < this.height) {
+        const start = y;
+        const kind = this.tileAt({ x, y })?.kind;
+        if (!kind) {
+          y += 1;
+          continue;
+        }
+
+        while (y + 1 < this.height && this.tileAt({ x, y: y + 1 })?.kind === kind) {
+          y += 1;
+        }
+
+        if (y - start + 1 >= 3) {
+          for (let matchY = start; matchY <= y; matchY += 1) {
+            add({ x, y: matchY });
+          }
+        }
+
+        y += 1;
+      }
+    }
+
+    return positions;
   }
 
   private hasAnyMatch(): boolean {
