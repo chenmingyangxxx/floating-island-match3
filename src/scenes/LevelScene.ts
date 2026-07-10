@@ -6,18 +6,22 @@ import { GoalSystem } from "../match3/GoalSystem";
 import { SeasonSystem } from "../match3/SeasonSystem";
 import { TerrainSystem } from "../match3/TerrainSystem";
 import type {
-  CountByTerrain,
   CountByTile,
   LevelConfig,
   Position,
   SpecialKind,
-  TerrainKind,
   Tile,
   TileKind,
 } from "../match3/types";
 
 interface LevelSceneData {
   levelIndex?: number;
+}
+
+interface DragCandidate {
+  position: Position;
+  x: number;
+  y: number;
 }
 
 const tileFeedbackColors: Record<TileKind, number> = {
@@ -36,12 +40,6 @@ const tileLabels: Record<TileKind, string> = {
   flower: "花朵",
   soil: "土壤",
   stardust: "星尘",
-};
-
-const terrainLabels: Record<TerrainKind, string> = {
-  barren: "荒地",
-  grass: "草地",
-  flowerbed: "花圃",
 };
 
 export class LevelScene extends Phaser.Scene {
@@ -64,9 +62,9 @@ export class LevelScene extends Phaser.Scene {
   private tileViews = new Map<string, Phaser.GameObjects.Container>();
   private goalBadges: Phaser.GameObjects.Container[] = [];
   private movesBadge?: Phaser.GameObjects.Container;
-  private seasonBadge?: Phaser.GameObjects.Container;
   private scoreText?: Phaser.GameObjects.Text;
   private settleNextBoardRender = false;
+  private dragCandidate?: DragCandidate;
 
   constructor() {
     super("LevelScene");
@@ -83,12 +81,14 @@ export class LevelScene extends Phaser.Scene {
     this.score = 0;
     this.selected = undefined;
     this.busy = false;
+    this.dragCandidate = undefined;
     this.tileViews.clear();
     this.goalBadges = [];
   }
 
   create(): void {
     this.scale.on("resize", this.layout, this);
+    this.input.on("pointerup", this.handlePointerUp, this);
     this.layout();
   }
 
@@ -120,8 +120,8 @@ export class LevelScene extends Phaser.Scene {
     this.uiLayer = this.add.container(0, 0).setDepth(30);
     this.goalBadges = [];
     const { width, height } = this.scale;
-    const season = this.seasonSystem.current;
     const compact = width < 620;
+    const movesWidth = compact ? 96 : 110;
 
     const title = this.add
       .text(18, 16, `${this.level.id}. ${this.level.name}`, {
@@ -133,35 +133,32 @@ export class LevelScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     this.scoreText = this.add
-      .text(width - 18, 17, `${this.score}`, {
+      .text(width - 18, 17, `得分 ${this.score}`, {
         fontFamily: "Microsoft YaHei, sans-serif",
-        fontSize: compact ? "22px" : "24px",
+        fontSize: compact ? "20px" : "24px",
         color: "#1f3c33",
         fontStyle: "700",
       })
       .setOrigin(1, 0);
 
-    this.movesBadge = this.createBadge(18, 56, compact ? 96 : 104, 36, 0x24483d, `步数 ${this.movesLeft}`);
-    this.seasonBadge = this.createBadge(
-      compact ? 124 : 132,
-      56,
-      compact ? 110 : 132,
-      36,
-      season.color,
-      `${season.shortLabel}季 ${this.seasonSystem.movesUntilNextSeason}`,
-    );
+    this.movesBadge = this.createBadge(18, 56, movesWidth, 40, 0x24483d, `步数 ${this.movesLeft}`);
 
     const goalStates = this.goalSystem.states();
     const goalItems = goalStates.map((goal, index) => {
       const text = `${goal.label} ${goal.current}/${goal.target}`;
-      const goalWidth = compact ? Math.floor((width - 46) / Math.max(goalStates.length, 1)) : 112;
-      const x = compact ? 18 + index * (goalWidth + 10) : Math.min(278, width * 0.46) + index * 122;
-      const y = compact ? 98 : 56;
+      const goalGap = compact ? 8 : 10;
+      const goalWidth = compact
+        ? Math.floor((width - 36 - movesWidth - goalGap * goalStates.length) / Math.max(goalStates.length, 1))
+        : 120;
+      const x = compact
+        ? 18 + movesWidth + goalGap + index * (goalWidth + goalGap)
+        : 144 + index * (goalWidth + goalGap);
+      const y = 56;
       const badge = this.createBadge(
         x,
         y,
         goalWidth,
-        36,
+        40,
         goal.complete ? 0x5d9f5b : 0xffffff,
         text,
         goal.complete ? "#ffffff" : "#315247",
@@ -179,7 +176,6 @@ export class LevelScene extends Phaser.Scene {
       title,
       this.scoreText,
       this.movesBadge,
-      this.seasonBadge,
       ...goalItems,
       resetButton,
       homeButton,
@@ -358,7 +354,7 @@ export class LevelScene extends Phaser.Scene {
       new Phaser.Geom.Rectangle(-this.cellSize / 2, -this.cellSize / 2, this.cellSize, this.cellSize),
       Phaser.Geom.Rectangle.Contains,
     );
-    container.on("pointerdown", () => this.handleTileClick(position));
+    container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handleTilePointerDown(position, pointer));
     container.on("pointerover", () => {
       if (!this.busy) {
         container.setScale(1.04);
@@ -388,6 +384,51 @@ export class LevelScene extends Phaser.Scene {
 
     this.boardLayer?.add(container);
     this.tileViews.set(this.board.keyOf(position), container);
+  }
+
+  private handleTilePointerDown(position: Position, pointer: Phaser.Input.Pointer): void {
+    if (this.busy || this.resultLayer) {
+      return;
+    }
+
+    this.dragCandidate = {
+      position,
+      x: pointer.x,
+      y: pointer.y,
+    };
+  }
+
+  private handlePointerUp(pointer: Phaser.Input.Pointer): void {
+    const candidate = this.dragCandidate;
+    this.dragCandidate = undefined;
+
+    if (!candidate || this.busy || this.resultLayer) {
+      return;
+    }
+
+    const deltaX = pointer.x - candidate.x;
+    const deltaY = pointer.y - candidate.y;
+    const threshold = Math.max(18, this.cellSize * 0.26);
+
+    if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < threshold) {
+      this.handleTileClick(candidate.position);
+      return;
+    }
+
+    const target =
+      Math.abs(deltaX) > Math.abs(deltaY)
+        ? { x: candidate.position.x + Math.sign(deltaX), y: candidate.position.y }
+        : { x: candidate.position.x, y: candidate.position.y + Math.sign(deltaY) };
+
+    if (!this.board.inBounds(target) || !this.board.tileAt(target)) {
+      this.selected = undefined;
+      this.flashCells([candidate.position], 0xd65050);
+      this.showPenaltyToast();
+      return;
+    }
+
+    this.selected = undefined;
+    void this.resolveMove(candidate.position, target);
   }
 
   private createSpecialMark(special: SpecialKind): Phaser.GameObjects.Graphics {
@@ -446,7 +487,6 @@ export class LevelScene extends Phaser.Scene {
   private async resolveMove(from: Position, to: Position): Promise<void> {
     this.busy = true;
     this.selected = undefined;
-    const seasonBefore = this.seasonSystem.current.id;
     const summary = this.resolver.trySwapAndResolve(from, to, this.seasonSystem.current);
 
     if (!summary.accepted) {
@@ -463,13 +503,11 @@ export class LevelScene extends Phaser.Scene {
     this.score += summary.scoreGained;
     this.goalSystem.recordCollection(summary.collected);
     this.goalSystem.recordTerrain(summary.terrainCreated);
-    this.seasonSystem.advanceMove();
-    const seasonChanged = this.seasonSystem.current.id !== seasonBefore;
 
     this.settleNextBoardRender = true;
     this.renderBoard();
     this.renderUi();
-    this.pulseProgress(summary, seasonChanged);
+    this.pulseProgress(summary);
     this.showRewardToast(summary);
 
     if (this.movesLeft <= 5 && !this.goalSystem.isComplete) {
@@ -770,14 +808,13 @@ export class LevelScene extends Phaser.Scene {
   private showRewardToast(summary: ResolveSummary): void {
     const chips = [`+${summary.scoreGained} 分`];
     chips.push(...this.formatTileCounts(summary.collected));
-    chips.push(...this.formatTerrainCounts(summary.terrainCreated));
 
     if (summary.chains > 1) {
-      chips.push(`连锁 x${summary.chains}`);
+      chips.push(`连消 x${summary.chains}`);
     }
 
     if (summary.specialsCreated > 0) {
-      chips.push(`特殊 +${summary.specialsCreated}`);
+      chips.push(`特殊棋子 +${summary.specialsCreated}`);
     }
 
     const layer = this.ensureFeedbackLayer();
@@ -817,7 +854,8 @@ export class LevelScene extends Phaser.Scene {
       alpha: 0,
       scaleX: 1,
       scaleY: 1,
-      duration: 1300,
+      delay: 1000,
+      duration: 1000,
       ease: "Cubic.easeOut",
       onComplete: () => container.destroy(),
     });
@@ -860,7 +898,8 @@ export class LevelScene extends Phaser.Scene {
       alpha: 0,
       scaleX: 1,
       scaleY: 1,
-      duration: 1100,
+      delay: 1600,
+      duration: 900,
       ease: "Cubic.easeOut",
       onComplete: () => container.destroy(),
     });
@@ -893,7 +932,8 @@ export class LevelScene extends Phaser.Scene {
       scaleY: 1.04,
       y: y - 18,
       alpha: 0,
-      duration: 700,
+      delay: 500,
+      duration: 900,
       ease: "Back.easeOut",
       onComplete: () => container.destroy(),
     });
@@ -918,13 +958,14 @@ export class LevelScene extends Phaser.Scene {
       alpha: 0,
       scaleX: 1.08,
       scaleY: 1.08,
-      duration: 760,
+      delay: 350,
+      duration: 1100,
       ease: "Cubic.easeOut",
       onComplete: () => text.destroy(),
     });
   }
 
-  private pulseProgress(summary: ResolveSummary, seasonChanged: boolean): void {
+  private pulseProgress(summary: ResolveSummary): void {
     this.pulse(this.scoreText);
     this.pulse(this.movesBadge);
 
@@ -932,11 +973,6 @@ export class LevelScene extends Phaser.Scene {
       for (const badge of this.goalBadges) {
         this.pulse(badge);
       }
-    }
-
-    if (seasonChanged) {
-      this.pulse(this.seasonBadge);
-      this.showFloatingText(this.scale.width / 2, this.headerHeight() - 12, `进入${this.seasonSystem.current.label}`, this.seasonSystem.current.color);
     }
   }
 
@@ -1013,12 +1049,6 @@ export class LevelScene extends Phaser.Scene {
       .map(([kind, count]) => `${tileLabels[kind as TileKind]} +${count}`);
   }
 
-  private formatTerrainCounts(counts: CountByTerrain): string[] {
-    return Object.entries(counts)
-      .filter(([, count]) => (count ?? 0) > 0)
-      .map(([terrain, count]) => `${terrainLabels[terrain as TerrainKind]} +${count}`);
-  }
-
   private uniquePositions(positions: Position[]): Position[] {
     const seen = new Set<string>();
     const unique: Position[] = [];
@@ -1059,7 +1089,7 @@ export class LevelScene extends Phaser.Scene {
   }
 
   private headerHeight(): number {
-    return this.scale.width < 620 ? 146 : 112;
+    return 112;
   }
 
   private ensureFeedbackLayer(): Phaser.GameObjects.Container {

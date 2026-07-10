@@ -37,7 +37,7 @@ export class Board {
       }
     }
 
-    this.fillInitialTiles();
+    this.fillPlayableTiles();
   }
 
   inBounds(position: Position): boolean {
@@ -144,6 +144,53 @@ export class Board {
     }
   }
 
+  hasAvailableMove(): boolean {
+    for (let y = 0; y < this.height; y += 1) {
+      for (let x = 0; x < this.width; x += 1) {
+        const position = { x, y };
+        if (!this.tileAt(position)) {
+          continue;
+        }
+
+        const candidates = [
+          { x: x + 1, y },
+          { x, y: y + 1 },
+        ];
+
+        for (const candidate of candidates) {
+          if (!this.inBounds(candidate) || !this.tileAt(candidate)) {
+            continue;
+          }
+
+          this.swap(position, candidate);
+          const hasMatch = this.hasAnyMatch();
+          this.swap(position, candidate);
+
+          if (hasMatch) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  ensurePlayableBoard(): void {
+    let attempts = 0;
+
+    while (!this.hasAvailableMove() && attempts < 20) {
+      attempts += 1;
+      this.clearAllTiles();
+      this.fillInitialTiles();
+    }
+  }
+
+  private fillPlayableTiles(): void {
+    this.fillInitialTiles();
+    this.ensurePlayableBoard();
+  }
+
   private fillInitialTiles(): void {
     for (let y = 0; y < this.height; y += 1) {
       for (let x = 0; x < this.width; x += 1) {
@@ -153,6 +200,14 @@ export class Board {
         }
 
         this.setTile(position, this.createTile(this.pickInitialKind(position)));
+      }
+    }
+  }
+
+  private clearAllTiles(): void {
+    for (let y = 0; y < this.height; y += 1) {
+      for (let x = 0; x < this.width; x += 1) {
+        this.setTile({ x, y }, null);
       }
     }
   }
@@ -175,5 +230,47 @@ export class Board {
       (leftOne?.kind === kind && leftTwo?.kind === kind) ||
       (upOne?.kind === kind && upTwo?.kind === kind)
     );
+  }
+
+  private hasAnyMatch(): boolean {
+    for (let y = 0; y < this.height; y += 1) {
+      let runKind: TileKind | undefined;
+      let runLength = 0;
+
+      for (let x = 0; x < this.width; x += 1) {
+        const kind = this.tileAt({ x, y })?.kind;
+        if (kind && kind === runKind) {
+          runLength += 1;
+        } else {
+          runKind = kind;
+          runLength = kind ? 1 : 0;
+        }
+
+        if (runLength >= 3) {
+          return true;
+        }
+      }
+    }
+
+    for (let x = 0; x < this.width; x += 1) {
+      let runKind: TileKind | undefined;
+      let runLength = 0;
+
+      for (let y = 0; y < this.height; y += 1) {
+        const kind = this.tileAt({ x, y })?.kind;
+        if (kind && kind === runKind) {
+          runLength += 1;
+        } else {
+          runKind = kind;
+          runLength = kind ? 1 : 0;
+        }
+
+        if (runLength >= 3) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 }

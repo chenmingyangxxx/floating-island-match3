@@ -107,6 +107,7 @@ export class BoardResolver {
       preferredSpecialPositions.length = 0;
     }
 
+    this.board.ensurePlayableBoard();
     return summary;
   }
 
