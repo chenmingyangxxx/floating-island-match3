@@ -3,6 +3,7 @@ import { LEVELS } from "../data/levels";
 import { Board } from "../match3/Board";
 import { BoardResolver, type ResolveSummary, type ResolveStep } from "../match3/BoardResolver";
 import { GoalSystem } from "../match3/GoalSystem";
+import { MatchFinder } from "../match3/MatchFinder";
 import { SeasonSystem } from "../match3/SeasonSystem";
 import { TerrainSystem } from "../match3/TerrainSystem";
 import type {
@@ -24,6 +25,12 @@ interface DragCandidate {
   y: number;
 }
 
+interface SwapIntent {
+  from: Position;
+  to: Position;
+  assisted: boolean;
+}
+
 const tileFeedbackColors: Record<TileKind, number> = {
   water: 0x43a6e8,
   sun: 0xffc247,
@@ -43,6 +50,10 @@ const tileLabels: Record<TileKind, string> = {
 };
 
 export class LevelScene extends Phaser.Scene {
+  private static lastRewardedAdAt = 0;
+
+  private readonly adBonusMoves = 5;
+  private readonly adCooldownMs = 90_000;
   private level!: LevelConfig;
   private board!: Board;
   private seasonSystem!: SeasonSystem;
@@ -59,12 +70,15 @@ export class LevelScene extends Phaser.Scene {
   private uiLayer?: Phaser.GameObjects.Container;
   private feedbackLayer?: Phaser.GameObjects.Container;
   private resultLayer?: Phaser.GameObjects.Container;
+  private adLayer?: Phaser.GameObjects.Container;
   private tileViews = new Map<string, Phaser.GameObjects.Container>();
   private goalBadges: Phaser.GameObjects.Container[] = [];
   private movesBadge?: Phaser.GameObjects.Container;
   private scoreText?: Phaser.GameObjects.Text;
+  private adButton?: Phaser.GameObjects.Container;
   private settleNextBoardRender = false;
   private dragCandidate?: DragCandidate;
+  private rewardedAdUsed = false;
 
   constructor() {
     super("LevelScene");
@@ -82,6 +96,10 @@ export class LevelScene extends Phaser.Scene {
     this.selected = undefined;
     this.busy = false;
     this.dragCandidate = undefined;
+    this.rewardedAdUsed = false;
+    this.resultLayer = undefined;
+    this.adLayer = undefined;
+    this.adButton = undefined;
     this.tileViews.clear();
     this.goalBadges = [];
   }
@@ -171,6 +189,9 @@ export class LevelScene extends Phaser.Scene {
       this.scene.restart({ levelIndex: LEVELS.indexOf(this.level) }),
     );
     const homeButton = this.createSmallButton(72, height - 42, "主页", () => this.scene.start("HomeScene"));
+    this.adButton = this.canOfferRewardedAd() && !this.resultLayer
+      ? this.createSmallButton(width / 2, height - 42, `广告 +${this.adBonusMoves}步`, () => this.showRewardedAdPrompt())
+      : undefined;
 
     this.uiLayer.add([
       title,
@@ -180,6 +201,10 @@ export class LevelScene extends Phaser.Scene {
       resetButton,
       homeButton,
     ]);
+
+    if (this.adButton) {
+      this.uiLayer.add(this.adButton);
+    }
   }
 
   private createBadge(
@@ -219,7 +244,7 @@ export class LevelScene extends Phaser.Scene {
     onClick: () => void,
   ): Phaser.GameObjects.Container {
     const container = this.add.container(x, y);
-    const width = 86;
+    const width = label.length > 4 ? 122 : 86;
     const height = 40;
     const graphics = this.add.graphics();
     graphics.fillStyle(0xffffff, 0.92);
@@ -428,7 +453,124 @@ export class LevelScene extends Phaser.Scene {
     }
 
     this.selected = undefined;
-    void this.resolveMove(candidate.position, target);
+    const intent = this.findSwapIntentForDrag(candidate.position, target, deltaX, deltaY);
+    if (intent.assisted) {
+      this.flashCells([candidate.position, intent.from, intent.to], 0xfff0a6);
+    }
+    void this.resolveMove(intent.from, intent.to);
+  }
+
+  private findSwapIntentForDrag(
+    start: Position,
+    target: Position,
+    deltaX: number,
+    deltaY: number,
+  ): SwapIntent {
+    if (this.previewSwapMatches(start, target).length > 0) {
+      return {
+        from: start,
+        to: target,
+        assisted: false,
+      };
+    }
+
+    const direction = {
+      x: Math.sign(deltaX),
+      y: Math.sign(deltaY),
+    };
+    const candidatePairs = this.validAdjacentPairs();
+    let best: { intent: SwapIntent; score: number } | undefined;
+
+    for (const [from, to] of candidatePairs) {
+      const matchPositions = this.previewSwapMatches(from, to);
+      if (matchPositions.length === 0 || !this.includesPosition(matchPositions, start)) {
+        continue;
+      }
+
+      const pairCenter = {
+        x: (from.x + to.x) / 2,
+        y: (from.y + to.y) / 2,
+      };
+      const pairDirection = {
+        x: to.x - from.x,
+        y: to.y - from.y,
+      };
+      const involvesTarget = this.samePosition(from, target) || this.samePosition(to, target);
+      const involvesStart = this.samePosition(from, start) || this.samePosition(to, start);
+      const sameAxis =
+        (Math.abs(deltaX) >= Math.abs(deltaY) && Math.abs(pairDirection.x) === 1) ||
+        (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(pairDirection.y) === 1);
+      const swipeAligned =
+        (direction.x !== 0 && pairDirection.x * direction.x > 0) ||
+        (direction.y !== 0 && pairDirection.y * direction.y > 0);
+      const distance = Math.abs(pairCenter.x - start.x) + Math.abs(pairCenter.y - start.y);
+      const score =
+        (involvesStart ? 40 : 0) +
+        (involvesTarget ? 28 : 0) +
+        (sameAxis ? 12 : 0) +
+        (swipeAligned ? 8 : 0) -
+        distance * 6;
+
+      if (!best || score > best.score) {
+        best = {
+          intent: {
+            from,
+            to,
+            assisted: true,
+          },
+          score,
+        };
+      }
+    }
+
+    return best?.intent ?? {
+      from: start,
+      to: target,
+      assisted: false,
+    };
+  }
+
+  private previewSwapMatches(from: Position, to: Position): Position[] {
+    if (!this.board.areAdjacent(from, to) || !this.board.tileAt(from) || !this.board.tileAt(to)) {
+      return [];
+    }
+
+    this.board.swap(from, to);
+    const matches = MatchFinder.findMatches(this.board);
+    this.board.swap(from, to);
+    return this.uniquePositions(matches.flatMap((match) => match.positions));
+  }
+
+  private validAdjacentPairs(): Array<[Position, Position]> {
+    const pairs: Array<[Position, Position]> = [];
+
+    for (let y = 0; y < this.board.height; y += 1) {
+      for (let x = 0; x < this.board.width; x += 1) {
+        const position = { x, y };
+        if (!this.board.tileAt(position)) {
+          continue;
+        }
+
+        for (const candidate of [
+          { x: x + 1, y },
+          { x, y: y + 1 },
+        ]) {
+          if (this.board.inBounds(candidate) && this.board.tileAt(candidate)) {
+            pairs.push([position, candidate]);
+          }
+        }
+      }
+    }
+
+    return pairs;
+  }
+
+  private includesPosition(positions: Position[], target: Position): boolean {
+    return positions.some((position) => this.samePosition(position, target));
+  }
+
+  private samePosition(a: Position, b: Position): boolean {
+    return a.x === b.x && a.y === b.y;
   }
 
   private createSpecialMark(special: SpecialKind): Phaser.GameObjects.Graphics {
@@ -965,6 +1107,193 @@ export class LevelScene extends Phaser.Scene {
     });
   }
 
+  private canOfferRewardedAd(force = false): boolean {
+    const cooledDown = Date.now() - LevelScene.lastRewardedAdAt >= this.adCooldownMs;
+    if (this.rewardedAdUsed || !cooledDown || this.goalSystem.isComplete) {
+      return false;
+    }
+
+    if (force) {
+      return true;
+    }
+
+    return this.movesLeft > 0 && this.movesLeft <= 3;
+  }
+
+  private showRewardedAdPrompt(): void {
+    const forceOffer = Boolean(this.resultLayer) && this.movesLeft <= 0;
+    if (!this.canOfferRewardedAd(forceOffer)) {
+      this.showAdNotice("广告稍后再试");
+      return;
+    }
+
+    const { width, height } = this.scale;
+    this.adLayer?.destroy(true);
+    this.adLayer = this.add.container(0, 0).setDepth(70);
+
+    const blocker = this.add.rectangle(0, 0, width, height, 0x17342d, 0.46).setOrigin(0, 0);
+    blocker.setInteractive();
+
+    const panelWidth = Math.min(width - 36, 340);
+    const panelHeight = 238;
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0xffffff, 0.98);
+    graphics.fillRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 8);
+    graphics.lineStyle(1, 0x1f3c33, 0.14);
+    graphics.strokeRoundedRect(-panelWidth / 2 + 0.5, -panelHeight / 2 + 0.5, panelWidth - 1, panelHeight - 1, 8);
+
+    const title = this.add
+      .text(0, -78, `观看广告获得 +${this.adBonusMoves} 步`, {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "23px",
+        color: "#1f3c33",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    const detail = this.add
+      .text(0, -20, "每关最多一次，步数不足时出现\n完整看完后立即继续本局", {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "15px",
+        color: "#4b6b5f",
+        align: "center",
+        lineSpacing: 6,
+      })
+      .setOrigin(0.5);
+
+    const playButton = this.createSmallButton(-70, 68, "播放广告", () => this.playRewardedAd());
+    const cancelButton = this.createSmallButton(70, 68, "取消", () => {
+      this.adLayer?.destroy(true);
+      this.adLayer = undefined;
+    });
+
+    const panel = this.add.container(width / 2, height / 2, [graphics, title, detail, playButton, cancelButton]);
+    this.adLayer.add([blocker, panel]);
+  }
+
+  private playRewardedAd(): void {
+    const { width, height } = this.scale;
+    this.adLayer?.destroy(true);
+    this.adLayer = this.add.container(0, 0).setDepth(70);
+    this.busy = true;
+
+    const blocker = this.add.rectangle(0, 0, width, height, 0x17342d, 0.62).setOrigin(0, 0);
+    blocker.setInteractive();
+
+    const panelWidth = Math.min(width - 36, 330);
+    const panelHeight = 190;
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0xffffff, 0.98);
+    graphics.fillRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 8);
+    graphics.lineStyle(1, 0x1f3c33, 0.14);
+    graphics.strokeRoundedRect(-panelWidth / 2 + 0.5, -panelHeight / 2 + 0.5, panelWidth - 1, panelHeight - 1, 8);
+
+    const title = this.add
+      .text(0, -54, "广告播放中", {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "22px",
+        color: "#1f3c33",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    const countdown = this.add
+      .text(0, -14, "3", {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "28px",
+        color: "#d76d33",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    const track = this.add.rectangle(0, 34, panelWidth - 68, 8, 0xdbe7df, 1);
+    const progress = this.add.rectangle(-(panelWidth - 68) / 2, 34, panelWidth - 68, 8, 0x5d9f5b, 1).setOrigin(0, 0.5);
+    progress.scaleX = 0;
+
+    const note = this.add
+      .text(0, 62, "模拟激励广告，可替换真实广告 SDK", {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "12px",
+        color: "#6a8177",
+      })
+      .setOrigin(0.5);
+
+    const panel = this.add.container(width / 2, height / 2, [graphics, title, countdown, track, progress, note]);
+    this.adLayer.add([blocker, panel]);
+
+    let secondsLeft = 3;
+    const countdownTimer = this.time.addEvent({
+      delay: 1000,
+      repeat: 2,
+      callback: () => {
+        secondsLeft -= 1;
+        countdown.setText(String(Math.max(secondsLeft, 0)));
+      },
+    });
+
+    this.tweens.add({
+      targets: progress,
+      scaleX: 1,
+      duration: 3000,
+      ease: "Linear",
+    });
+
+    this.time.delayedCall(3100, () => {
+      countdownTimer.remove(false);
+      this.grantRewardedMoves();
+    });
+  }
+
+  private grantRewardedMoves(): void {
+    this.rewardedAdUsed = true;
+    LevelScene.lastRewardedAdAt = Date.now();
+    this.movesLeft += this.adBonusMoves;
+    this.busy = false;
+
+    this.adLayer?.destroy(true);
+    this.adLayer = undefined;
+    this.resultLayer?.destroy(true);
+    this.resultLayer = undefined;
+
+    this.renderUi();
+    this.cameras.main.flash(180, 255, 255, 255);
+    this.showFloatingText(this.scale.width / 2, this.headerHeight() + 20, `步数 +${this.adBonusMoves}`, 0x1f7a5c);
+  }
+
+  private showAdNotice(label: string): void {
+    const { width, height } = this.scale;
+    const layer = this.add.container(0, 0).setDepth(75);
+    const blocker = this.add.rectangle(0, 0, width, height, 0x17342d, 0.2).setOrigin(0, 0);
+    blocker.setInteractive();
+
+    const toastWidth = Math.min(width - 48, 260);
+    const bg = this.add.graphics();
+    bg.fillStyle(0xffffff, 0.98);
+    bg.fillRoundedRect(-toastWidth / 2, -26, toastWidth, 52, 8);
+    bg.lineStyle(1, 0x1f3c33, 0.14);
+    bg.strokeRoundedRect(-toastWidth / 2 + 0.5, -25.5, toastWidth - 1, 51, 8);
+    const text = this.add
+      .text(0, 0, label, {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "17px",
+        color: "#315247",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    const toast = this.add.container(width / 2, height / 2, [bg, text]);
+    layer.add([blocker, toast]);
+    this.tweens.add({
+      targets: toast,
+      y: height / 2 - 12,
+      alpha: 0,
+      delay: 900,
+      duration: 520,
+      ease: "Cubic.easeOut",
+      onComplete: () => layer.destroy(true),
+    });
+  }
+
   private pulseProgress(summary: ResolveSummary): void {
     this.pulse(this.scoreText);
     this.pulse(this.movesBadge);
@@ -1004,12 +1333,13 @@ export class LevelScene extends Phaser.Scene {
 
   private showResult(won: boolean): void {
     const { width, height } = this.scale;
+    const canContinueWithAd = !won && this.canOfferRewardedAd(true);
     this.resultLayer?.destroy(true);
     this.resultLayer = this.add.container(0, 0).setDepth(50);
 
     const blocker = this.add.rectangle(0, 0, width, height, 0x17342d, 0.36).setOrigin(0, 0);
     const panelWidth = Math.min(width - 36, 360);
-    const panelHeight = 220;
+    const panelHeight = canContinueWithAd ? 252 : 220;
     const graphics = this.add.graphics();
     graphics.fillStyle(0xffffff, 0.98);
     graphics.fillRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 8);
@@ -1033,13 +1363,24 @@ export class LevelScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    const action = this.createSmallButton(0, 48, won ? "再玩一关" : "重试", () => {
+    const actionY = canContinueWithAd ? 70 : 48;
+    const retryX = canContinueWithAd ? 70 : 0;
+    const action = this.createSmallButton(retryX, actionY, won ? "再玩一关" : "重试", () => {
       const currentIndex = LEVELS.indexOf(this.level);
       const nextIndex = won ? (currentIndex + 1) % LEVELS.length : currentIndex;
       this.scene.restart({ levelIndex: nextIndex });
     });
+    const children: Phaser.GameObjects.GameObject[] = [graphics, title, score];
 
-    const panel = this.add.container(width / 2, height / 2, [graphics, title, score, action]);
+    if (canContinueWithAd) {
+      const continueButton = this.createSmallButton(-70, actionY, `广告+${this.adBonusMoves}步`, () =>
+        this.showRewardedAdPrompt(),
+      );
+      children.push(continueButton);
+    }
+
+    children.push(action);
+    const panel = this.add.container(width / 2, height / 2, children);
     this.resultLayer.add([blocker, panel]);
   }
 
