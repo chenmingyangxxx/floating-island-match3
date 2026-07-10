@@ -22,6 +22,10 @@ interface DragCandidate {
   position: Position;
   x: number;
   y: number;
+  currentX: number;
+  currentY: number;
+  dragging: boolean;
+  pointerId: number;
 }
 
 const tileFeedbackColors: Record<TileKind, number> = {
@@ -98,7 +102,11 @@ export class LevelScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.scale.off("resize", this.layout, this);
+    this.input.off("pointermove", this.handlePointerMove, this);
+    this.input.off("pointerup", this.handlePointerUp, this);
     this.scale.on("resize", this.layout, this);
+    this.input.on("pointermove", this.handlePointerMove, this);
     this.input.on("pointerup", this.handlePointerUp, this);
     this.layout();
   }
@@ -342,9 +350,17 @@ export class LevelScene extends Phaser.Scene {
       }
     }
 
-    if (this.selected?.x === position.x && this.selected.y === position.y) {
+    if (this.selected && this.samePosition(this.selected, position)) {
       const selected = this.add.graphics();
-      selected.lineStyle(4, 0x1f7a5c, 1);
+      selected.fillStyle(0x1f7a5c, 0.16);
+      selected.fillRoundedRect(
+        center.x - this.cellSize / 2 + 4,
+        center.y - this.cellSize / 2 + 4,
+        this.cellSize - 8,
+        this.cellSize - 8,
+        8,
+      );
+      selected.lineStyle(6, 0x1f7a5c, 1);
       selected.strokeRoundedRect(
         center.x - this.cellSize / 2 + 3,
         center.y - this.cellSize / 2 + 3,
@@ -361,6 +377,25 @@ export class LevelScene extends Phaser.Scene {
         repeat: -1,
         ease: "Sine.easeInOut",
       });
+    } else if (this.selected && this.board.areAdjacent(this.selected, position) && cell.tile) {
+      const hint = this.add.graphics();
+      hint.fillStyle(0xfff0a6, 0.14);
+      hint.fillRoundedRect(
+        center.x - this.cellSize / 2 + 6,
+        center.y - this.cellSize / 2 + 6,
+        this.cellSize - 12,
+        this.cellSize - 12,
+        8,
+      );
+      hint.lineStyle(3, 0xffc247, 0.78);
+      hint.strokeRoundedRect(
+        center.x - this.cellSize / 2 + 7,
+        center.y - this.cellSize / 2 + 7,
+        this.cellSize - 14,
+        this.cellSize - 14,
+        8,
+      );
+      this.boardLayer?.add(hint);
     }
   }
 
@@ -424,8 +459,27 @@ export class LevelScene extends Phaser.Scene {
       position,
       x: pointer.x,
       y: pointer.y,
+      currentX: pointer.x,
+      currentY: pointer.y,
+      dragging: false,
+      pointerId: pointer.id,
     };
-    this.flashCells([position], 0x1f7a5c);
+  }
+
+  private handlePointerMove(pointer: Phaser.Input.Pointer): void {
+    const candidate = this.dragCandidate;
+    if (!candidate || candidate.pointerId !== pointer.id) {
+      return;
+    }
+
+    candidate.currentX = pointer.x;
+    candidate.currentY = pointer.y;
+
+    const moveDistance = Math.hypot(candidate.currentX - candidate.x, candidate.currentY - candidate.y);
+    const dragThreshold = Math.max(22, this.cellSize * 0.3);
+    if (moveDistance >= dragThreshold) {
+      candidate.dragging = true;
+    }
   }
 
   private handlePointerUp(pointer: Phaser.Input.Pointer): void {
@@ -436,12 +490,20 @@ export class LevelScene extends Phaser.Scene {
       return;
     }
 
-    const deltaX = pointer.x - candidate.x;
-    const deltaY = pointer.y - candidate.y;
+    const pointerDeltaX = pointer.x - candidate.x;
+    const pointerDeltaY = pointer.y - candidate.y;
+    const trackedDeltaX = candidate.currentX - candidate.x;
+    const trackedDeltaY = candidate.currentY - candidate.y;
+    const pointerDistance = Math.hypot(pointerDeltaX, pointerDeltaY);
+    const trackedDistance = Math.hypot(trackedDeltaX, trackedDeltaY);
+    const endX = trackedDistance > pointerDistance ? candidate.currentX : pointer.x;
+    const endY = trackedDistance > pointerDistance ? candidate.currentY : pointer.y;
+    const deltaX = endX - candidate.x;
+    const deltaY = endY - candidate.y;
     const distance = Math.hypot(deltaX, deltaY);
     const tapSlop = Math.max(22, this.cellSize * 0.3);
     const swipeSlop = Math.max(26, this.cellSize * 0.36);
-    const releasePosition = this.positionFromPoint(pointer.x, pointer.y);
+    const releasePosition = this.positionFromPoint(endX, endY);
 
     if (!releasePosition) {
       this.selected = undefined;
@@ -449,7 +511,7 @@ export class LevelScene extends Phaser.Scene {
       return;
     }
 
-    if (distance < tapSlop) {
+    if (!candidate.dragging && distance < tapSlop) {
       this.handleTileClick(candidate.position);
       return;
     }
@@ -542,24 +604,37 @@ export class LevelScene extends Phaser.Scene {
     }
 
     if (!this.selected) {
-      this.selected = position;
-      this.renderBoard();
+      this.selectTile(position);
       return;
     }
 
-    if (this.selected.x === position.x && this.selected.y === position.y) {
+    if (this.samePosition(this.selected, position)) {
       this.selected = undefined;
       this.renderBoard();
       return;
     }
 
     if (!this.board.areAdjacent(this.selected, position)) {
-      this.selected = position;
-      this.renderBoard();
+      this.flashSelectableTiles(this.selected);
       return;
     }
 
-    void this.resolveMove(this.selected, position);
+    const from = this.selected;
+    this.selected = undefined;
+    this.renderBoard();
+    this.flashCells([from, position], 0xfff0a6);
+    void this.resolveMove(from, position);
+  }
+
+  private selectTile(position: Position): void {
+    this.selected = position;
+    this.renderBoard();
+    this.flashSelectableTiles(position);
+  }
+
+  private flashSelectableTiles(position: Position): void {
+    const targets = [position, ...this.board.neighborsOf(position).filter((neighbor) => this.board.tileAt(neighbor))];
+    this.flashCells(targets, 0xffc247);
   }
 
   private async resolveMove(from: Position, to: Position): Promise<void> {
