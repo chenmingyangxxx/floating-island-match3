@@ -486,7 +486,12 @@ export class LevelScene extends Phaser.Scene {
     const candidate = this.dragCandidate;
     this.dragCandidate = undefined;
 
-    if (!candidate || this.busy || this.resultLayer) {
+    if (!candidate) {
+      this.cancelSelectionFromEmptyTap(pointer);
+      return;
+    }
+
+    if (this.busy || this.resultLayer) {
       return;
     }
 
@@ -502,14 +507,7 @@ export class LevelScene extends Phaser.Scene {
     const deltaY = endY - candidate.y;
     const distance = Math.hypot(deltaX, deltaY);
     const tapSlop = Math.max(22, this.cellSize * 0.3);
-    const swipeSlop = Math.max(26, this.cellSize * 0.36);
-    const releasePosition = this.positionFromPoint(endX, endY);
-
-    if (!releasePosition) {
-      this.selected = undefined;
-      this.renderBoard();
-      return;
-    }
+    const swipeSlop = Math.max(18, this.cellSize * 0.22);
 
     if (!candidate.dragging && distance < tapSlop) {
       this.handleTileClick(candidate.position);
@@ -523,12 +521,6 @@ export class LevelScene extends Phaser.Scene {
       return;
     }
 
-    if (!this.samePosition(releasePosition, candidate.position) && !this.samePosition(releasePosition, target)) {
-      this.selected = undefined;
-      this.renderBoard();
-      return;
-    }
-
     this.selected = undefined;
     this.flashCells([candidate.position, target], 0xfff0a6);
     void this.resolveMove(candidate.position, target);
@@ -537,7 +529,7 @@ export class LevelScene extends Phaser.Scene {
   private swipeTarget(position: Position, deltaX: number, deltaY: number, threshold: number): Position | undefined {
     const absX = Math.abs(deltaX);
     const absY = Math.abs(deltaY);
-    const directionBias = 1.22;
+    const directionBias = 1.08;
 
     if (absX < threshold && absY < threshold) {
       return undefined;
@@ -558,6 +550,18 @@ export class LevelScene extends Phaser.Scene {
     }
 
     return undefined;
+  }
+
+  private cancelSelectionFromEmptyTap(pointer: Phaser.Input.Pointer): void {
+    if (this.busy || this.resultLayer || !this.selected) {
+      return;
+    }
+
+    const position = this.positionFromPoint(pointer.x, pointer.y);
+    if (!position || !this.board.tileAt(position)) {
+      this.selected = undefined;
+      this.renderBoard();
+    }
   }
 
   private positionFromPoint(x: number, y: number): Position | undefined {
@@ -615,7 +619,7 @@ export class LevelScene extends Phaser.Scene {
     }
 
     if (!this.board.areAdjacent(this.selected, position)) {
-      this.flashSelectableTiles(this.selected);
+      this.selectTile(position);
       return;
     }
 
