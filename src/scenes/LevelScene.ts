@@ -428,6 +428,7 @@ export class LevelScene extends Phaser.Scene {
     const deltaY = pointer.y - candidate.y;
     const distance = Math.hypot(deltaX, deltaY);
     const tapSlop = Math.max(22, this.cellSize * 0.3);
+    const swipeSlop = Math.max(26, this.cellSize * 0.36);
     const releasePosition = this.positionFromPoint(pointer.x, pointer.y);
 
     if (!releasePosition) {
@@ -436,19 +437,47 @@ export class LevelScene extends Phaser.Scene {
       return;
     }
 
-    if (distance < tapSlop || this.samePosition(releasePosition, candidate.position)) {
+    if (distance < tapSlop) {
       this.handleTileClick(candidate.position);
       return;
     }
 
-    if (!this.board.areAdjacent(candidate.position, releasePosition) || !this.board.tileAt(releasePosition)) {
+    const target = this.swipeTarget(candidate.position, deltaX, deltaY, swipeSlop);
+    if (!target || !this.board.inBounds(target) || !this.board.tileAt(target)) {
       this.selected = undefined;
       this.renderBoard();
       return;
     }
 
     this.selected = undefined;
-    void this.resolveMove(candidate.position, releasePosition);
+    this.flashCells([candidate.position, target], 0xfff0a6);
+    void this.resolveMove(candidate.position, target);
+  }
+
+  private swipeTarget(position: Position, deltaX: number, deltaY: number, threshold: number): Position | undefined {
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+    const directionBias = 1.22;
+
+    if (absX < threshold && absY < threshold) {
+      return undefined;
+    }
+
+    if (absX >= absY * directionBias) {
+      return {
+        x: position.x + Math.sign(deltaX),
+        y: position.y,
+      };
+    }
+
+    if (absY >= absX * directionBias) {
+      return {
+        x: position.x,
+        y: position.y + Math.sign(deltaY),
+      };
+    }
+
+    return undefined;
   }
 
   private positionFromPoint(x: number, y: number): Position | undefined {
@@ -456,10 +485,6 @@ export class LevelScene extends Phaser.Scene {
     const boardY = Math.floor((y - this.boardOrigin.y) / this.cellSize);
     const position = { x: boardX, y: boardY };
     return this.board.inBounds(position) ? position : undefined;
-  }
-
-  private samePosition(a: Position, b: Position): boolean {
-    return a.x === b.x && a.y === b.y;
   }
 
   private createSpecialMark(special: SpecialKind): Phaser.GameObjects.Graphics {
