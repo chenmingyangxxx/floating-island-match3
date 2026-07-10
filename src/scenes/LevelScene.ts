@@ -9,6 +9,7 @@ import { TerrainSystem } from "../match3/TerrainSystem";
 import type {
   CountByTile,
   LevelConfig,
+  MatchGroup,
   Position,
   SpecialKind,
   Tile,
@@ -466,7 +467,7 @@ export class LevelScene extends Phaser.Scene {
     deltaX: number,
     deltaY: number,
   ): SwapIntent {
-    if (this.previewSwapMatches(start, target).length > 0) {
+    if (this.previewSwapGroups(start, target).length > 0) {
       return {
         from: start,
         to: target,
@@ -474,16 +475,15 @@ export class LevelScene extends Phaser.Scene {
       };
     }
 
-    const direction = {
-      x: Math.sign(deltaX),
-      y: Math.sign(deltaY),
-    };
-    const candidatePairs = this.validAdjacentPairs();
+    const dragAxis = Math.abs(deltaX) >= Math.abs(deltaY) ? "horizontal" : "vertical";
+    const direction = { x: Math.sign(deltaX), y: Math.sign(deltaY) };
+    const candidatePairs = this.localAssistedPairs(start);
     let best: { intent: SwapIntent; score: number } | undefined;
 
     for (const [from, to] of candidatePairs) {
-      const matchPositions = this.previewSwapMatches(from, to);
-      if (matchPositions.length === 0 || !this.includesPosition(matchPositions, start)) {
+      const groups = this.previewSwapGroups(from, to);
+      const relevantGroups = groups.filter((group) => this.includesPosition(group.positions, start));
+      if (relevantGroups.length === 0) {
         continue;
       }
 
@@ -495,8 +495,13 @@ export class LevelScene extends Phaser.Scene {
         x: to.x - from.x,
         y: to.y - from.y,
       };
+      const matchPositions = this.uniquePositions(relevantGroups.flatMap((group) => group.positions));
       const involvesTarget = this.samePosition(from, target) || this.samePosition(to, target);
       const involvesStart = this.samePosition(from, start) || this.samePosition(to, start);
+      const matchIncludesTarget = this.includesPosition(matchPositions, target);
+      const axisMatched = relevantGroups.some((group) =>
+        group.runs.some((run) => run.direction === dragAxis && this.includesPosition(run.positions, start)),
+      );
       const sameAxis =
         (Math.abs(deltaX) >= Math.abs(deltaY) && Math.abs(pairDirection.x) === 1) ||
         (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(pairDirection.y) === 1);
@@ -507,6 +512,8 @@ export class LevelScene extends Phaser.Scene {
       const score =
         (involvesStart ? 40 : 0) +
         (involvesTarget ? 28 : 0) +
+        (matchIncludesTarget ? 18 : 0) +
+        (axisMatched ? 16 : 0) +
         (sameAxis ? 12 : 0) +
         (swipeAligned ? 8 : 0) -
         distance * 6;
@@ -530,24 +537,28 @@ export class LevelScene extends Phaser.Scene {
     };
   }
 
-  private previewSwapMatches(from: Position, to: Position): Position[] {
+  private previewSwapGroups(from: Position, to: Position): MatchGroup[] {
     if (!this.board.areAdjacent(from, to) || !this.board.tileAt(from) || !this.board.tileAt(to)) {
       return [];
     }
 
     this.board.swap(from, to);
-    const matches = MatchFinder.findMatches(this.board);
+    const matches = MatchFinder.findMatches(this.board).filter((group) =>
+      group.positions.some((position) => this.samePosition(position, from) || this.samePosition(position, to)),
+    );
     this.board.swap(from, to);
-    return this.uniquePositions(matches.flatMap((match) => match.positions));
+    return matches;
   }
 
-  private validAdjacentPairs(): Array<[Position, Position]> {
+  private localAssistedPairs(start: Position): Array<[Position, Position]> {
     const pairs: Array<[Position, Position]> = [];
+    const seen = new Set<string>();
+    const radius = 2;
 
-    for (let y = 0; y < this.board.height; y += 1) {
-      for (let x = 0; x < this.board.width; x += 1) {
+    for (let y = start.y - radius; y <= start.y + radius; y += 1) {
+      for (let x = start.x - radius; x <= start.x + radius; x += 1) {
         const position = { x, y };
-        if (!this.board.tileAt(position)) {
+        if (!this.board.inBounds(position) || !this.board.tileAt(position)) {
           continue;
         }
 
@@ -555,7 +566,19 @@ export class LevelScene extends Phaser.Scene {
           { x: x + 1, y },
           { x, y: y + 1 },
         ]) {
-          if (this.board.inBounds(candidate) && this.board.tileAt(candidate)) {
+          if (!this.board.inBounds(candidate) || !this.board.tileAt(candidate)) {
+            continue;
+          }
+
+          if (
+            Math.max(Math.abs(candidate.x - start.x), Math.abs(candidate.y - start.y)) <= radius
+          ) {
+            const key = [this.board.keyOf(position), this.board.keyOf(candidate)].sort().join("|");
+            if (seen.has(key)) {
+              continue;
+            }
+
+            seen.add(key);
             pairs.push([position, candidate]);
           }
         }
@@ -742,25 +765,121 @@ export class LevelScene extends Phaser.Scene {
   }
 
   private async playResolutionFeedback(summary: ResolveSummary): Promise<void> {
-    const firstStep = summary.steps[0];
-    if (!firstStep) {
+    if (summary.steps.length === 0) {
       return;
     }
 
-    this.flashCells(firstStep.clearedTiles.map((cleared) => cleared.position), 0xfff0a6);
-    await this.animateSpecialEffects(firstStep);
-    await this.animateClearedTiles(firstStep);
+    for (const [index, step] of summary.steps.entries()) {
+      if (index > 0) {
+        this.showComboBanner(`连锁 x${step.chain}`, 0xd56f35);
+        await this.delay(140);
+      }
 
-    if (summary.chains > 1) {
-      this.showComboBanner(`连锁 x${summary.chains}`, 0xd56f35);
-      this.cameras.main.shake(140, 0.0025);
-      await this.delay(180);
+      this.flashCells(step.clearedTiles.map((cleared) => cleared.position), 0xfff0a6);
+      await this.animateMatchPaths(step);
+      await this.animateSpecialEffects(step);
+      await this.animateClearedTiles(step, index === 0);
     }
 
     if (summary.specialsCreated > 0) {
       this.showComboBanner(`特殊棋子 +${summary.specialsCreated}`, 0x7e68d6);
       await this.delay(120);
     }
+
+    if (summary.chains > 1) {
+      this.cameras.main.shake(140, 0.0025);
+    }
+  }
+
+  private async animateMatchPaths(step: ResolveStep): Promise<void> {
+    const layer = this.ensureFeedbackLayer();
+    const animations: Promise<void>[] = [];
+
+    for (const match of step.matches) {
+      const color = tileFeedbackColors[match.kind];
+
+      for (const run of match.runs) {
+        const sorted = [...run.positions].sort((a, b) =>
+          run.direction === "horizontal" ? a.x - b.x : a.y - b.y,
+        );
+        const first = sorted[0];
+        const last = sorted[sorted.length - 1];
+        if (!first || !last) {
+          continue;
+        }
+
+        const start = this.centerOf(first);
+        const end = this.centerOf(last);
+        const angle = Phaser.Math.Angle.Between(start.x, start.y, end.x, end.y);
+        const length = Phaser.Math.Distance.Between(start.x, start.y, end.x, end.y) + this.cellSize * 0.72;
+        const offsetX = Math.cos(angle) * this.cellSize * 0.36;
+        const offsetY = Math.sin(angle) * this.cellSize * 0.36;
+        const beamStart = {
+          x: start.x - offsetX,
+          y: start.y - offsetY,
+        };
+
+        const glow = this.add
+          .rectangle(beamStart.x, beamStart.y, length, Math.max(18, this.cellSize * 0.22), color, 0.24)
+          .setOrigin(0, 0.5)
+          .setRotation(angle)
+          .setScale(0, 1);
+        const core = this.add
+          .rectangle(beamStart.x, beamStart.y, length, Math.max(7, this.cellSize * 0.09), 0xffffff, 0.82)
+          .setOrigin(0, 0.5)
+          .setRotation(angle)
+          .setScale(0, 1);
+        const spark = this.add.circle(beamStart.x, beamStart.y, Math.max(5, this.cellSize * 0.08), 0xffffff, 0.95);
+
+        layer.add([glow, core, spark]);
+        animations.push(this.tweenTo(glow, { scaleX: 1, duration: 220, ease: "Cubic.easeOut" }));
+        animations.push(this.tweenTo(core, { scaleX: 1, duration: 220, ease: "Cubic.easeOut" }));
+        animations.push(
+          this.tweenTo(spark, {
+            x: end.x + offsetX,
+            y: end.y + offsetY,
+            duration: 250,
+            ease: "Cubic.easeOut",
+          }),
+        );
+
+        for (const [index, position] of sorted.entries()) {
+          const center = this.centerOf(position);
+          const pulse = this.add.circle(center.x, center.y, this.cellSize * 0.18, color, 0.26);
+          layer.add(pulse);
+          this.tweens.add({
+            targets: pulse,
+            radius: this.cellSize * 0.42,
+            alpha: 0,
+            delay: index * 45,
+            duration: 330,
+            ease: "Cubic.easeOut",
+            onComplete: () => pulse.destroy(),
+          });
+        }
+
+        this.tweens.add({
+          targets: [glow, core, spark],
+          alpha: 0,
+          delay: 330,
+          duration: 260,
+          ease: "Cubic.easeOut",
+          onComplete: () => {
+            glow.destroy();
+            core.destroy();
+            spark.destroy();
+          },
+        });
+      }
+    }
+
+    if (animations.length === 0) {
+      await this.delay(120);
+      return;
+    }
+
+    await Promise.all(animations);
+    await this.delay(130);
   }
 
   private async animateSpecialEffects(step: ResolveStep): Promise<void> {
@@ -846,7 +965,7 @@ export class LevelScene extends Phaser.Scene {
     }
   }
 
-  private async animateClearedTiles(step: ResolveStep): Promise<void> {
+  private async animateClearedTiles(step: ResolveStep, animateTileViews: boolean): Promise<void> {
     const layer = this.ensureFeedbackLayer();
     const positions = this.uniquePositions(step.clearedTiles.map((cleared) => cleared.position));
     const center = this.averageCenter(positions);
@@ -879,7 +998,7 @@ export class LevelScene extends Phaser.Scene {
         onComplete: () => ring.destroy(),
       });
 
-      if (view) {
+      if (view && animateTileViews) {
         view.disableInteractive();
         this.tweens.add({
           targets: view,

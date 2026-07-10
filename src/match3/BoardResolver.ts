@@ -20,6 +20,7 @@ export interface SpecialPlacement {
 
 export interface ResolveStep {
   chain: number;
+  matches: MatchGroup[];
   clearedTiles: ClearedTile[];
   specialPlacements: SpecialPlacement[];
   collected: CountByTile;
@@ -38,6 +39,8 @@ export interface ResolveSummary {
 }
 
 export class BoardResolver {
+  private readonly enableSpecialTiles = false;
+
   constructor(
     private readonly board: Board,
     private readonly terrainSystem: TerrainSystem,
@@ -49,7 +52,7 @@ export class BoardResolver {
     }
 
     this.board.swap(a, b);
-    const matches = MatchFinder.findMatches(this.board);
+    const matches = this.matchesTouchingPositions(MatchFinder.findMatches(this.board), [a, b]);
     if (matches.length === 0) {
       this.board.swap(a, b);
       return this.emptySummary(false);
@@ -86,6 +89,7 @@ export class BoardResolver {
       summary.scoreGained += stepScore;
       summary.steps.push({
         chain,
+        matches,
         clearedTiles,
         specialPlacements,
         collected: stepCollected,
@@ -115,6 +119,10 @@ export class BoardResolver {
     matches: MatchGroup[],
     preferredPositions: Position[],
   ): Array<{ position: Position; kind: Tile["kind"]; special: SpecialKind }> {
+    if (!this.enableSpecialTiles) {
+      return [];
+    }
+
     const placements: Array<{ position: Position; kind: Tile["kind"]; special: SpecialKind }> = [];
     const occupied = new Set<string>();
 
@@ -170,7 +178,7 @@ export class BoardResolver {
       }
 
       const tile = this.board.tileAt(position);
-      if (!tile?.special) {
+      if (!this.enableSpecialTiles || !tile?.special) {
         continue;
       }
 
@@ -276,6 +284,18 @@ export class BoardResolver {
     for (const [terrain, count] of Object.entries(added)) {
       target[terrain as keyof CountByTerrain] = (target[terrain as keyof CountByTerrain] ?? 0) + count;
     }
+  }
+
+  private matchesTouchingPositions(matches: MatchGroup[], positions: Position[]): MatchGroup[] {
+    return matches.filter((match) =>
+      match.positions.some((matchPosition) =>
+        positions.some((position) => this.samePosition(matchPosition, position)),
+      ),
+    );
+  }
+
+  private samePosition(a: Position, b: Position): boolean {
+    return a.x === b.x && a.y === b.y;
   }
 
   private emptySummary(accepted: boolean): ResolveSummary {
