@@ -297,6 +297,8 @@ export class LevelScene extends Phaser.Scene {
     graphics.fillRoundedRect(this.boardOrigin.x - 8, this.boardOrigin.y - 4, width + 16, height + 18, 8);
     graphics.fillStyle(0xffffff, 0.28);
     graphics.fillRoundedRect(this.boardOrigin.x - 6, this.boardOrigin.y - 8, width + 12, height + 12, 8);
+    graphics.lineStyle(3, 0x1f7a5c, 0.32);
+    graphics.strokeRoundedRect(this.boardOrigin.x - 5, this.boardOrigin.y - 7, width + 10, height + 10, 8);
     this.boardLayer?.add(graphics);
   }
 
@@ -306,7 +308,16 @@ export class LevelScene extends Phaser.Scene {
     const cellImage = this.add
       .image(center.x, center.y, `cell-${cell.terrain}`)
       .setDisplaySize(this.cellSize - 3, this.cellSize - 3);
-    this.boardLayer?.add(cellImage);
+    const cellBorder = this.add.graphics();
+    cellBorder.lineStyle(1, 0x1f7a5c, 0.14);
+    cellBorder.strokeRoundedRect(
+      center.x - this.cellSize / 2 + 5,
+      center.y - this.cellSize / 2 + 5,
+      this.cellSize - 10,
+      this.cellSize - 10,
+      8,
+    );
+    this.boardLayer?.add([cellImage, cellBorder]);
 
     if (cell.tile) {
       this.renderTile(position, cell.tile);
@@ -414,6 +425,7 @@ export class LevelScene extends Phaser.Scene {
       x: pointer.x,
       y: pointer.y,
     };
+    this.flashCells([position], 0x1f7a5c);
   }
 
   private handlePointerUp(pointer: Phaser.Input.Pointer): void {
@@ -444,6 +456,12 @@ export class LevelScene extends Phaser.Scene {
 
     const target = this.swipeTarget(candidate.position, deltaX, deltaY, swipeSlop);
     if (!target || !this.board.inBounds(target) || !this.board.tileAt(target)) {
+      this.selected = undefined;
+      this.renderBoard();
+      return;
+    }
+
+    if (!this.samePosition(releasePosition, candidate.position) && !this.samePosition(releasePosition, target)) {
       this.selected = undefined;
       this.renderBoard();
       return;
@@ -485,6 +503,10 @@ export class LevelScene extends Phaser.Scene {
     const boardY = Math.floor((y - this.boardOrigin.y) / this.cellSize);
     const position = { x: boardX, y: boardY };
     return this.board.inBounds(position) ? position : undefined;
+  }
+
+  private samePosition(a: Position, b: Position): boolean {
+    return a.x === b.x && a.y === b.y;
   }
 
   private createSpecialMark(special: SpecialKind): Phaser.GameObjects.Graphics {
