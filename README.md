@@ -77,7 +77,7 @@ pnpm build
 
 ## GitHub Pages 托管
 
-项目已经内置 GitHub Actions 发布流程。把源码推送到 GitHub 仓库的 `main` 分支后，仓库会自动构建 `dist/` 并发布到 GitHub Pages。
+项目已经内置 GitHub Actions 发布流程。把源码推送到 GitHub 仓库的 `main` 分支后，仓库会自动构建 `dist/` 并发布到 `gh-pages` 分支。
 
 适配规则：
 
@@ -88,5 +88,6 @@ pnpm build
 
 1. 打开仓库的 `Settings`。
 2. 进入 `Pages`。
-3. 在 `Build and deployment` 中把 `Source` 选为 `GitHub Actions`。
-4. 推送 `main` 分支后等待 Actions 完成。
+3. 在 `Build and deployment` 中把 `Source` 选为 `Deploy from a branch`。
+4. 分支选择 `gh-pages`，目录选择 `/ (root)`。
+5. 推送 `main` 分支后等待 Actions 完成。
