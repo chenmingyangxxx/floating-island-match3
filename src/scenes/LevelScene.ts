@@ -294,6 +294,7 @@ export class LevelScene extends Phaser.Scene {
       }
     }
 
+    this.renderBoardInputZone();
     this.settleNextBoardRender = false;
   }
 
@@ -308,6 +309,26 @@ export class LevelScene extends Phaser.Scene {
     graphics.lineStyle(3, 0x1f7a5c, 0.32);
     graphics.strokeRoundedRect(this.boardOrigin.x - 5, this.boardOrigin.y - 7, width + 10, height + 10, 8);
     this.boardLayer?.add(graphics);
+  }
+
+  private renderBoardInputZone(): void {
+    const width = this.cellSize * this.board.width;
+    const height = this.cellSize * this.board.height;
+    const padding = Math.min(12, this.cellSize * 0.14);
+    const zone = this.add
+      .zone(
+        this.boardOrigin.x - padding,
+        this.boardOrigin.y - padding,
+        width + padding * 2,
+        height + padding * 2,
+      )
+      .setOrigin(0, 0)
+      .setInteractive(
+        new Phaser.Geom.Rectangle(0, 0, width + padding * 2, height + padding * 2),
+        Phaser.Geom.Rectangle.Contains,
+      );
+    zone.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handleBoardPointerDown(pointer));
+    this.boardLayer?.add(zone);
   }
 
   private renderCell(position: Position): void {
@@ -414,21 +435,6 @@ export class LevelScene extends Phaser.Scene {
     }
 
     container.setSize(this.cellSize, this.cellSize);
-    container.setInteractive(
-      new Phaser.Geom.Rectangle(-this.cellSize / 2, -this.cellSize / 2, this.cellSize, this.cellSize),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handleTilePointerDown(position, pointer));
-    container.on("pointerover", () => {
-      if (!this.busy) {
-        container.setScale(1.04);
-      }
-    });
-    container.on("pointerout", () => {
-      if (!this.busy) {
-        container.setScale(1);
-      }
-    });
 
     if (this.settleNextBoardRender) {
       container.setAlpha(0);
@@ -448,6 +454,21 @@ export class LevelScene extends Phaser.Scene {
 
     this.boardLayer?.add(container);
     this.tileViews.set(this.board.keyOf(position), container);
+  }
+
+  private handleBoardPointerDown(pointer: Phaser.Input.Pointer): void {
+    if (this.busy || this.resultLayer) {
+      return;
+    }
+
+    const position = this.positionFromPoint(pointer.x, pointer.y, true);
+    if (!position || !this.board.tileAt(position)) {
+      this.selected = undefined;
+      this.renderBoard();
+      return;
+    }
+
+    this.handleTilePointerDown(position, pointer);
   }
 
   private handleTilePointerDown(position: Position, pointer: Phaser.Input.Pointer): void {
@@ -557,16 +578,31 @@ export class LevelScene extends Phaser.Scene {
       return;
     }
 
-    const position = this.positionFromPoint(pointer.x, pointer.y);
+    const position = this.positionFromPoint(pointer.x, pointer.y, true);
     if (!position || !this.board.tileAt(position)) {
       this.selected = undefined;
       this.renderBoard();
     }
   }
 
-  private positionFromPoint(x: number, y: number): Position | undefined {
-    const boardX = Math.floor((x - this.boardOrigin.x) / this.cellSize);
-    const boardY = Math.floor((y - this.boardOrigin.y) / this.cellSize);
+  private positionFromPoint(x: number, y: number, allowEdgePadding = false): Position | undefined {
+    const boardWidth = this.cellSize * this.board.width;
+    const boardHeight = this.cellSize * this.board.height;
+    const padding = allowEdgePadding ? Math.min(12, this.cellSize * 0.14) : 0;
+
+    if (
+      x < this.boardOrigin.x - padding ||
+      x > this.boardOrigin.x + boardWidth + padding ||
+      y < this.boardOrigin.y - padding ||
+      y > this.boardOrigin.y + boardHeight + padding
+    ) {
+      return undefined;
+    }
+
+    const clampedX = Phaser.Math.Clamp(x, this.boardOrigin.x, this.boardOrigin.x + boardWidth - 1);
+    const clampedY = Phaser.Math.Clamp(y, this.boardOrigin.y, this.boardOrigin.y + boardHeight - 1);
+    const boardX = Math.floor((clampedX - this.boardOrigin.x) / this.cellSize);
+    const boardY = Math.floor((clampedY - this.boardOrigin.y) / this.cellSize);
     const position = { x: boardX, y: boardY };
     return this.board.inBounds(position) ? position : undefined;
   }
