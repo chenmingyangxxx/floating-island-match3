@@ -89,7 +89,7 @@ export function recordLevelWin(levelId: number, score: number): LevelWinReward {
 }
 
 export function overallRepairPercent(progress = loadProgress()): number {
-  const total = progress.stageProgress.reduce((sum, value) => sum + Phaser.Math.Clamp(value, 0, 100), 0);
+  const total = progress.stageProgress.reduce((sum, value) => sum + clamp(value, 0, 100), 0);
   return Math.round(total / REPAIR_STAGES.length);
 }
 
