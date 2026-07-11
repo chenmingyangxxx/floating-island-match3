@@ -1,5 +1,13 @@
 import Phaser from "phaser";
 import { audioDirector } from "../core/AudioDirector";
+import {
+  completedStageCount,
+  currentRepairStageIndex,
+  loadProgress,
+  overallRepairPercent,
+} from "../core/ProgressStore";
+import { LEVELS } from "../data/levels";
+import { showIslandStatusPanel } from "../ui/IslandStatusPanel";
 
 export class HomeScene extends Phaser.Scene {
   private floatingTiles: Phaser.GameObjects.Image[] = [];
@@ -23,6 +31,10 @@ export class HomeScene extends Phaser.Scene {
     background.fillGradientStyle(0xeaf5f0, 0xeaf5f0, 0xd8ecff, 0xf8efd9, 1);
     background.fillRect(0, 0, width, height);
 
+    const progress = loadProgress();
+    const percent = overallRepairPercent(progress);
+    const completed = completedStageCount(progress);
+
     this.drawIsland(width, height);
     this.drawFloatingTiles(width, height);
 
@@ -43,7 +55,9 @@ export class HomeScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    this.createStartButton(width / 2, Math.min(height * 0.75, height - 95));
+    this.drawProgressSummary(width, height, completed, percent, progress.diamonds);
+    this.createStartButton(width / 2, Math.min(height * 0.76, height - 118), completed > 0 ? "继续修复" : "开始修复浮岛");
+    this.createStatusButton(width / 2, Math.min(height * 0.76 + 62, height - 56));
   }
 
   private drawIsland(width: number, height: number): void {
@@ -92,7 +106,31 @@ export class HomeScene extends Phaser.Scene {
     });
   }
 
-  private createStartButton(x: number, y: number): Phaser.GameObjects.Container {
+  private drawProgressSummary(width: number, height: number, completed: number, percent: number, diamonds: number): void {
+    const panelWidth = Math.min(width - 48, 330);
+    const x = width / 2;
+    const y = Math.min(height * 0.66, height - 178);
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0xffffff, 0.72);
+    graphics.fillRoundedRect(x - panelWidth / 2, y - 34, panelWidth, 68, 8);
+    graphics.lineStyle(1, 0x1f7a5c, 0.16);
+    graphics.strokeRoundedRect(x - panelWidth / 2 + 0.5, y - 33.5, panelWidth - 1, 67, 8);
+
+    this.add
+      .text(x, y - 16, `浮岛进度 ${completed}/8 · ${percent}%    钻石 ${diamonds}`, {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "15px",
+        color: "#315247",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    const trackWidth = panelWidth - 50;
+    this.add.rectangle(x - trackWidth / 2, y + 12, trackWidth, 9, 0xdbe7df, 1).setOrigin(0, 0.5);
+    this.add.rectangle(x - trackWidth / 2, y + 12, trackWidth, 9, 0x5d9f5b, 1).setOrigin(0, 0.5).setScale(percent / 100, 1);
+  }
+
+  private createStartButton(x: number, y: number, labelText: string): Phaser.GameObjects.Container {
     const container = this.add.container(x, y);
     const width = 220;
     const height = 56;
@@ -103,7 +141,7 @@ export class HomeScene extends Phaser.Scene {
     graphics.strokeRoundedRect(-width / 2 + 1, -height / 2 + 1, width - 2, height - 2, 8);
 
     const label = this.add
-      .text(0, 0, "开始修复浮岛", {
+      .text(0, 0, labelText, {
         fontFamily: "Microsoft YaHei, sans-serif",
         fontSize: "20px",
         color: "#ffffff",
@@ -119,7 +157,42 @@ export class HomeScene extends Phaser.Scene {
     container.on("pointerdown", () => {
       audioDirector.unlock();
       audioDirector.play("ui");
-      this.scene.start("LevelScene", { levelIndex: 0 });
+      const progress = loadProgress();
+      const levelIndex = Math.min(currentRepairStageIndex(progress), LEVELS.length - 1);
+      this.scene.start("LevelScene", { levelIndex });
+    });
+
+    return container;
+  }
+
+  private createStatusButton(x: number, y: number): Phaser.GameObjects.Container {
+    const container = this.add.container(x, y);
+    const width = 168;
+    const height = 42;
+    const graphics = this.add.graphics();
+    graphics.fillStyle(0xffffff, 0.94);
+    graphics.fillRoundedRect(-width / 2, -height / 2, width, height, 8);
+    graphics.lineStyle(1, 0x1f3c33, 0.16);
+    graphics.strokeRoundedRect(-width / 2 + 0.5, -height / 2 + 0.5, width - 1, height - 1, 8);
+
+    const label = this.add
+      .text(0, 0, "查看浮岛状态", {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "16px",
+        color: "#315247",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    container.add([graphics, label]);
+    container.setSize(width, height);
+    container.setInteractive({ useHandCursor: true });
+    container.on("pointerover", () => container.setScale(1.03));
+    container.on("pointerout", () => container.setScale(1));
+    container.on("pointerdown", () => {
+      audioDirector.unlock();
+      audioDirector.play("ui");
+      showIslandStatusPanel(this);
     });
 
     return container;

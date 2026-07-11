@@ -57,6 +57,7 @@ export interface LevelConfig {
   boardWidth: number;
   boardHeight: number;
   moves: number;
+  timeLimitSeconds: number;
   seasonOrder: SeasonId[];
   seasonChangeEvery: number;
   availableTiles: TileKind[];
@@ -100,4 +101,3 @@ export interface SeasonDefinition {
   color: number;
   description: string;
 }
-

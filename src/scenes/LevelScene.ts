@@ -1,9 +1,11 @@
 import Phaser from "phaser";
 import { audioDirector } from "../core/AudioDirector";
+import { completedStageCount, loadProgress, overallRepairPercent, recordLevelWin } from "../core/ProgressStore";
 import { LEVELS } from "../data/levels";
 import { Board } from "../match3/Board";
 import { BoardResolver, type ResolveSummary, type ResolveStep } from "../match3/BoardResolver";
 import { GoalSystem } from "../match3/GoalSystem";
+import { MatchFinder } from "../match3/MatchFinder";
 import { SeasonSystem } from "../match3/SeasonSystem";
 import { TerrainSystem } from "../match3/TerrainSystem";
 import type {
@@ -14,6 +16,7 @@ import type {
   Tile,
   TileKind,
 } from "../match3/types";
+import { showIslandStatusPanel } from "../ui/IslandStatusPanel";
 
 interface LevelSceneData {
   levelIndex?: number;
@@ -28,6 +31,15 @@ interface DragCandidate {
   dragging: boolean;
   pointerId: number;
 }
+
+interface HintMove {
+  from: Position;
+  to: Position;
+  matchPositions: Position[];
+  score: number;
+}
+
+type RewardedAdKind = "moves" | "hint";
 
 const tileFeedbackColors: Record<TileKind, number> = {
   water: 0x43a6e8,
@@ -51,6 +63,8 @@ export class LevelScene extends Phaser.Scene {
   private static lastRewardedAdAt = 0;
 
   private readonly adBonusMoves = 5;
+  private readonly maxHintsPerLevel = 3;
+  private readonly hintAdBonus = 1;
   private readonly adCooldownMs = 90_000;
   private level!: LevelConfig;
   private board!: Board;
@@ -59,9 +73,13 @@ export class LevelScene extends Phaser.Scene {
   private goalSystem!: GoalSystem;
   private resolver!: BoardResolver;
   private movesLeft = 0;
+  private timeRemaining = 0;
   private score = 0;
+  private hintsLeft = 0;
   private selected?: Position;
   private busy = false;
+  private timerPaused = false;
+  private resultShown = false;
   private cellSize = 64;
   private boardOrigin = { x: 0, y: 0 };
   private boardLayer?: Phaser.GameObjects.Container;
@@ -72,11 +90,16 @@ export class LevelScene extends Phaser.Scene {
   private tileViews = new Map<string, Phaser.GameObjects.Container>();
   private goalBadges: Phaser.GameObjects.Container[] = [];
   private movesBadge?: Phaser.GameObjects.Container;
+  private timerBadge?: Phaser.GameObjects.Container;
   private scoreText?: Phaser.GameObjects.Text;
   private adButton?: Phaser.GameObjects.Container;
+  private hintButton?: Phaser.GameObjects.Container;
+  private islandButton?: Phaser.GameObjects.Container;
+  private countdownEvent?: Phaser.Time.TimerEvent;
+  private islandStatusLayer?: Phaser.GameObjects.Container;
   private settleNextBoardRender = false;
   private dragCandidate?: DragCandidate;
-  private rewardedAdUsed = false;
+  private rewardedMoveAdUsed = false;
 
   constructor() {
     super("LevelScene");
@@ -90,14 +113,21 @@ export class LevelScene extends Phaser.Scene {
     this.goalSystem = new GoalSystem(this.level.goals);
     this.resolver = new BoardResolver(this.board, this.terrainSystem);
     this.movesLeft = this.level.moves;
+    this.timeRemaining = this.level.timeLimitSeconds;
     this.score = 0;
+    this.hintsLeft = this.maxHintsPerLevel;
     this.selected = undefined;
     this.busy = false;
+    this.timerPaused = false;
+    this.resultShown = false;
     this.dragCandidate = undefined;
-    this.rewardedAdUsed = false;
+    this.rewardedMoveAdUsed = false;
     this.resultLayer = undefined;
     this.adLayer = undefined;
     this.adButton = undefined;
+    this.hintButton = undefined;
+    this.islandButton = undefined;
+    this.islandStatusLayer = undefined;
     this.tileViews.clear();
     this.goalBadges = [];
   }
@@ -111,6 +141,7 @@ export class LevelScene extends Phaser.Scene {
     this.input.on("pointermove", this.handlePointerMove, this);
     this.input.on("pointerup", this.handlePointerUp, this);
     this.layout();
+    this.startLevelTimer();
   }
 
   private layout(): void {
@@ -120,6 +151,33 @@ export class LevelScene extends Phaser.Scene {
     this.renderBoard();
     this.renderUi();
     this.feedbackLayer = this.add.container(0, 0).setDepth(40);
+  }
+
+  private startLevelTimer(): void {
+    this.countdownEvent?.remove(false);
+    this.countdownEvent = this.time.addEvent({
+      delay: 1000,
+      loop: true,
+      callback: () => this.tickTimer(),
+    });
+  }
+
+  private tickTimer(): void {
+    if (this.timerPaused || this.resultLayer || this.goalSystem.isComplete) {
+      return;
+    }
+
+    this.timeRemaining = Math.max(0, this.timeRemaining - 1);
+    this.renderUi();
+
+    if (this.timeRemaining === 15) {
+      audioDirector.play("lowMoves");
+      this.showFloatingText(this.scale.width / 2, this.headerHeight() + 16, "时间告急", 0xd76d33);
+    }
+
+    if (this.timeRemaining <= 0) {
+      this.checkResult();
+    }
   }
 
   private drawBackground(): void {
@@ -133,7 +191,7 @@ export class LevelScene extends Phaser.Scene {
     graphics.fillStyle(0xffffff, 0.26);
     graphics.fillEllipse(width * 0.78, headerHeight - 18, Math.min(360, width * 0.7), 86);
     graphics.fillStyle(0xeff7ea, 1);
-    graphics.fillRect(0, height - 72, width, 72);
+    graphics.fillRect(0, height - 104, width, 104);
   }
 
   private renderUi(): void {
@@ -142,10 +200,18 @@ export class LevelScene extends Phaser.Scene {
     this.goalBadges = [];
     const { width, height } = this.scale;
     const compact = width < 620;
-    const movesWidth = compact ? 96 : 110;
+    const statGap = compact ? 7 : 10;
+    const statWidth = compact ? Math.floor((width - 36 - statGap * 2) / 3) : 108;
+    const progress = loadProgress();
+    const runtimeStageProgress = this.runtimeStageProgress();
+    const displayStageProgress = [...progress.stageProgress];
+    const stageIndex = LEVELS.indexOf(this.level);
+    displayStageProgress[stageIndex] = Math.max(displayStageProgress[stageIndex] ?? 0, runtimeStageProgress);
+    const islandPercent = Math.round(displayStageProgress.reduce((sum, value) => sum + value, 0) / displayStageProgress.length);
+    const completed = completedStageCount({ ...progress, stageProgress: displayStageProgress });
 
     const title = this.add
-      .text(18, 16, `${this.level.id}. ${this.level.name}`, {
+      .text(16, 10, `${this.level.id}. ${this.level.name}`, {
         fontFamily: "Microsoft YaHei, sans-serif",
         fontSize: compact ? "18px" : "20px",
         color: "#1f3c33",
@@ -154,7 +220,7 @@ export class LevelScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     this.scoreText = this.add
-      .text(width - 18, 17, `得分 ${this.score}`, {
+      .text(width - 16, 10, `得分 ${this.score}`, {
         fontFamily: "Microsoft YaHei, sans-serif",
         fontSize: compact ? "20px" : "24px",
         color: "#1f3c33",
@@ -162,19 +228,45 @@ export class LevelScene extends Phaser.Scene {
       })
       .setOrigin(1, 0);
 
-    this.movesBadge = this.createBadge(18, 56, movesWidth, 40, 0x24483d, `步数 ${this.movesLeft}`);
+    const islandProgress = this.add
+      .text(16, 36, `浮岛 ${completed}/8 · ${islandPercent}% · 钻石 ${progress.diamonds}`, {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: compact ? "13px" : "14px",
+        color: "#4b6b5f",
+        fontStyle: "700",
+      })
+      .setOrigin(0, 0);
+
+    this.movesBadge = this.createBadge(18, 60, statWidth, 34, 0x24483d, `步数 ${this.movesLeft}`);
+    this.timerBadge = this.createBadge(
+      18 + (statWidth + statGap),
+      60,
+      statWidth,
+      34,
+      this.timeRemaining <= 15 ? 0xd76d33 : 0x24483d,
+      `时间 ${this.formatTime(this.timeRemaining)}`,
+    );
+    const hintsBadge = this.createBadge(
+      18 + (statWidth + statGap) * 2,
+      60,
+      statWidth,
+      34,
+      this.hintsLeft > 0 ? 0x5d9f5b : 0xffffff,
+      `提示 ${this.hintsLeft}`,
+      this.hintsLeft > 0 ? "#ffffff" : "#315247",
+    );
 
     const goalStates = this.goalSystem.states();
     const goalItems = goalStates.map((goal, index) => {
       const text = `${goal.label} ${goal.current}/${goal.target}`;
       const goalGap = compact ? 8 : 10;
       const goalWidth = compact
-        ? Math.floor((width - 36 - movesWidth - goalGap * goalStates.length) / Math.max(goalStates.length, 1))
-        : 120;
+        ? Math.floor((width - 36 - goalGap * Math.max(goalStates.length - 1, 0)) / Math.max(goalStates.length, 1))
+        : 128;
       const x = compact
-        ? 18 + movesWidth + goalGap + index * (goalWidth + goalGap)
-        : 144 + index * (goalWidth + goalGap);
-      const y = 56;
+        ? 18 + index * (goalWidth + goalGap)
+        : 18 + index * (goalWidth + goalGap);
+      const y = 102;
       const badge = this.createBadge(
         x,
         y,
@@ -188,26 +280,73 @@ export class LevelScene extends Phaser.Scene {
       return badge;
     });
 
-    const resetButton = this.createSmallButton(width - 72, height - 42, "重来", () =>
+    const footerY = height - 42;
+    const homeButton = this.createSmallButton(54, footerY, "主页", () => this.scene.start("HomeScene"));
+    this.islandButton = this.createSmallButton(width * 0.37, footerY, "浮岛", () => this.showIslandStatus());
+    this.hintButton = this.createSmallButton(
+      width * 0.63,
+      footerY,
+      this.hintsLeft > 0 ? `提示 ${this.hintsLeft}` : "广告提示",
+      () => this.requestHint(),
+    );
+    const resetButton = this.createSmallButton(width - 54, footerY, "重来", () =>
       this.scene.restart({ levelIndex: LEVELS.indexOf(this.level) }),
     );
-    const homeButton = this.createSmallButton(72, height - 42, "主页", () => this.scene.start("HomeScene"));
-    this.adButton = this.canOfferRewardedAd() && !this.resultLayer
-      ? this.createSmallButton(width / 2, height - 42, `广告 +${this.adBonusMoves}步`, () => this.showRewardedAdPrompt())
+    this.adButton = this.canOfferRewardedAd("moves") && !this.resultLayer
+      ? this.createSmallButton(width / 2, height - 88, `广告 +${this.adBonusMoves}步`, () => this.showRewardedAdPrompt("moves"))
       : undefined;
 
     this.uiLayer.add([
       title,
       this.scoreText,
+      islandProgress,
       this.movesBadge,
+      this.timerBadge,
+      hintsBadge,
       ...goalItems,
-      resetButton,
       homeButton,
+      this.islandButton,
+      this.hintButton,
+      resetButton,
     ]);
 
     if (this.adButton) {
       this.uiLayer.add(this.adButton);
     }
+  }
+
+  private runtimeStageProgress(): number {
+    const states = this.goalSystem.states();
+    if (states.length === 0) {
+      return 0;
+    }
+
+    const average = states.reduce((sum, goal) => sum + goal.current / goal.target, 0) / states.length;
+    return this.goalSystem.isComplete ? 100 : Math.min(99, Math.round(average * 100));
+  }
+
+  private formatTime(seconds: number): string {
+    const safeSeconds = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(safeSeconds / 60);
+    const remainingSeconds = safeSeconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+  }
+
+  private showIslandStatus(): void {
+    if (this.islandStatusLayer) {
+      return;
+    }
+
+    this.timerPaused = true;
+    this.islandStatusLayer = showIslandStatusPanel(this, {
+      runtimeStageIndex: LEVELS.indexOf(this.level),
+      runtimeStagePercent: this.runtimeStageProgress(),
+      title: "本局浮岛状态",
+      onClose: () => {
+        this.islandStatusLayer = undefined;
+        this.timerPaused = false;
+      },
+    });
   }
 
   private createBadge(
@@ -283,7 +422,7 @@ export class LevelScene extends Phaser.Scene {
 
     const { width, height } = this.scale;
     const headerHeight = this.headerHeight();
-    const footerHeight = 72;
+    const footerHeight = 104;
     const maxBoardWidth = Math.min(width - 28, 620);
     const maxBoardHeight = Math.max(260, height - headerHeight - footerHeight - 26);
     this.cellSize = Math.floor(Math.min(maxBoardWidth / this.board.width, maxBoardHeight / this.board.height));
@@ -685,6 +824,154 @@ export class LevelScene extends Phaser.Scene {
   private flashSelectableTiles(position: Position): void {
     const targets = [position, ...this.board.neighborsOf(position).filter((neighbor) => this.board.tileAt(neighbor))];
     this.flashCells(targets, 0xffc247);
+  }
+
+  private requestHint(): void {
+    if (this.busy || this.resultLayer) {
+      return;
+    }
+
+    if (this.hintsLeft <= 0) {
+      if (this.canOfferRewardedAd("hint")) {
+        this.showRewardedAdPrompt("hint");
+        return;
+      }
+
+      this.showAdNotice("提示已用完，广告稍后再试");
+      return;
+    }
+
+    const hint = this.findBestHint();
+    if (!hint) {
+      this.showAdNotice("当前棋盘正在重排提示");
+      this.board.ensurePlayableBoard();
+      this.settleNextBoardRender = true;
+      this.renderBoard();
+      return;
+    }
+
+    this.hintsLeft -= 1;
+    this.selected = undefined;
+    this.renderBoard();
+    this.renderUi();
+    audioDirector.play("reward");
+    this.animateHintMove(hint);
+  }
+
+  private findBestHint(): HintMove | undefined {
+    const hints: HintMove[] = [];
+    const activeGoalKinds = this.activeGoalKinds();
+
+    for (let y = 0; y < this.board.height; y += 1) {
+      for (let x = 0; x < this.board.width; x += 1) {
+        const from = { x, y };
+        if (!this.board.tileAt(from)) {
+          continue;
+        }
+
+        const candidates = [
+          { x: x + 1, y },
+          { x, y: y + 1 },
+        ];
+
+        for (const to of candidates) {
+          if (!this.board.inBounds(to) || !this.board.tileAt(to)) {
+            continue;
+          }
+
+          this.board.swap(from, to);
+          const matches = MatchFinder.findMatches(this.board).filter((match) =>
+            match.positions.some((matchPosition) =>
+              this.samePosition(matchPosition, from) || this.samePosition(matchPosition, to),
+            ),
+          );
+          const matchPositions = this.uniquePositions(matches.flatMap((match) => match.positions));
+          const goalHits = matchPositions.filter((position) => {
+            const tile = this.board.tileAt(position);
+            return tile ? activeGoalKinds.has(tile.kind) : false;
+          }).length;
+          this.board.swap(from, to);
+
+          if (matches.length === 0) {
+            continue;
+          }
+
+          hints.push({
+            from,
+            to,
+            matchPositions,
+            score: matchPositions.length * 12 + matches.length * 18 + goalHits * 24,
+          });
+        }
+      }
+    }
+
+    return hints.sort((a, b) => b.score - a.score)[0];
+  }
+
+  private activeGoalKinds(): Set<TileKind> {
+    const states = this.goalSystem.states();
+    const kinds = new Set<TileKind>();
+    this.level.goals.forEach((goal, index) => {
+      if (goal.type === "collect" && !states[index]?.complete) {
+        kinds.add(goal.tile);
+      }
+    });
+    return kinds;
+  }
+
+  private animateHintMove(hint: HintMove): void {
+    const layer = this.ensureFeedbackLayer();
+    const fromCenter = this.centerOf(hint.from);
+    const toCenter = this.centerOf(hint.to);
+    const allPositions = this.uniquePositions([hint.from, hint.to, ...hint.matchPositions]);
+
+    this.flashCells(allPositions, 0x8a72f0);
+    const line = this.add
+      .line(0, 0, fromCenter.x, fromCenter.y, toCenter.x, toCenter.y, 0x8a72f0, 0.98)
+      .setOrigin(0, 0);
+    line.setLineWidth(Math.max(5, this.cellSize * 0.08));
+    layer.add(line);
+
+    for (const position of [hint.from, hint.to]) {
+      const center = this.centerOf(position);
+      const ring = this.add.graphics();
+      ring.setPosition(center.x, center.y);
+      ring.lineStyle(5, 0xfff0a6, 1);
+      ring.strokeRoundedRect(
+        -this.cellSize / 2 + 4,
+        -this.cellSize / 2 + 4,
+        this.cellSize - 8,
+        this.cellSize - 8,
+        8,
+      );
+      layer.add(ring);
+      this.tweens.add({
+        targets: ring,
+        alpha: 0.18,
+        scaleX: 1.12,
+        scaleY: 1.12,
+        duration: 240,
+        yoyo: true,
+        repeat: 4,
+        ease: "Sine.easeInOut",
+        onComplete: () => ring.destroy(),
+      });
+    }
+
+    const midpoint = {
+      x: (fromCenter.x + toCenter.x) / 2,
+      y: (fromCenter.y + toCenter.y) / 2,
+    };
+    this.showFloatingText(midpoint.x, midpoint.y - this.cellSize * 0.5, "交换这里", 0x7e68d6);
+    this.tweens.add({
+      targets: line,
+      alpha: 0,
+      delay: 900,
+      duration: 360,
+      ease: "Cubic.easeOut",
+      onComplete: () => line.destroy(),
+    });
   }
 
   private async resolveMove(from: Position, to: Position): Promise<void> {
@@ -1271,9 +1558,17 @@ export class LevelScene extends Phaser.Scene {
     });
   }
 
-  private canOfferRewardedAd(force = false): boolean {
+  private canOfferRewardedAd(kind: RewardedAdKind, force = false): boolean {
     const cooledDown = Date.now() - LevelScene.lastRewardedAdAt >= this.adCooldownMs;
-    if (this.rewardedAdUsed || !cooledDown || this.goalSystem.isComplete) {
+    if (!cooledDown || this.goalSystem.isComplete) {
+      return false;
+    }
+
+    if (kind === "hint") {
+      return !this.resultLayer && this.hintsLeft <= 0;
+    }
+
+    if (this.rewardedMoveAdUsed || this.timeRemaining <= 0) {
       return false;
     }
 
@@ -1284,15 +1579,16 @@ export class LevelScene extends Phaser.Scene {
     return this.movesLeft > 0 && this.movesLeft <= 3;
   }
 
-  private showRewardedAdPrompt(): void {
-    const forceOffer = Boolean(this.resultLayer) && this.movesLeft <= 0;
-    if (!this.canOfferRewardedAd(forceOffer)) {
+  private showRewardedAdPrompt(kind: RewardedAdKind): void {
+    const forceOffer = kind === "moves" && Boolean(this.resultLayer) && this.movesLeft <= 0;
+    if (!this.canOfferRewardedAd(kind, forceOffer)) {
       this.showAdNotice("广告稍后再试");
       return;
     }
 
     const { width, height } = this.scale;
     audioDirector.play("adOpen");
+    this.timerPaused = true;
     this.adLayer?.destroy(true);
     this.adLayer = this.add.container(0, 0).setDepth(70);
 
@@ -1308,7 +1604,7 @@ export class LevelScene extends Phaser.Scene {
     graphics.strokeRoundedRect(-panelWidth / 2 + 0.5, -panelHeight / 2 + 0.5, panelWidth - 1, panelHeight - 1, 8);
 
     const title = this.add
-      .text(0, -78, `观看广告获得 +${this.adBonusMoves} 步`, {
+      .text(0, -78, kind === "moves" ? `观看广告获得 +${this.adBonusMoves} 步` : "观看广告获得 +1 提示", {
         fontFamily: "Microsoft YaHei, sans-serif",
         fontSize: "23px",
         color: "#1f3c33",
@@ -1317,30 +1613,39 @@ export class LevelScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     const detail = this.add
-      .text(0, -20, "每关最多一次，步数不足时出现\n完整看完后立即继续本局", {
+      .text(
+        0,
+        -20,
+        kind === "moves"
+          ? "每关最多一次，步数不足时出现\n完整看完后立即继续本局"
+          : "提示次数用完后可观看\n完整看完获得 1 次新提示",
+        {
         fontFamily: "Microsoft YaHei, sans-serif",
         fontSize: "15px",
         color: "#4b6b5f",
         align: "center",
         lineSpacing: 6,
-      })
+        },
+      )
       .setOrigin(0.5);
 
-    const playButton = this.createSmallButton(-70, 68, "播放广告", () => this.playRewardedAd());
+    const playButton = this.createSmallButton(-70, 68, "播放广告", () => this.playRewardedAd(kind));
     const cancelButton = this.createSmallButton(70, 68, "取消", () => {
       this.adLayer?.destroy(true);
       this.adLayer = undefined;
+      this.timerPaused = false;
     });
 
     const panel = this.add.container(width / 2, height / 2, [graphics, title, detail, playButton, cancelButton]);
     this.adLayer.add([blocker, panel]);
   }
 
-  private playRewardedAd(): void {
+  private playRewardedAd(kind: RewardedAdKind): void {
     const { width, height } = this.scale;
     this.adLayer?.destroy(true);
     this.adLayer = this.add.container(0, 0).setDepth(70);
     this.busy = true;
+    this.timerPaused = true;
 
     const blocker = this.add.rectangle(0, 0, width, height, 0x17342d, 0.62).setOrigin(0, 0);
     blocker.setInteractive();
@@ -1405,25 +1710,38 @@ export class LevelScene extends Phaser.Scene {
 
     this.time.delayedCall(3100, () => {
       countdownTimer.remove(false);
-      this.grantRewardedMoves();
+      this.grantRewardedAd(kind);
     });
   }
 
-  private grantRewardedMoves(): void {
-    this.rewardedAdUsed = true;
+  private grantRewardedAd(kind: RewardedAdKind): void {
     LevelScene.lastRewardedAdAt = Date.now();
-    this.movesLeft += this.adBonusMoves;
+    if (kind === "moves") {
+      this.rewardedMoveAdUsed = true;
+      this.movesLeft += this.adBonusMoves;
+    } else {
+      this.hintsLeft += this.hintAdBonus;
+    }
     this.busy = false;
+    this.timerPaused = false;
 
     this.adLayer?.destroy(true);
     this.adLayer = undefined;
-    this.resultLayer?.destroy(true);
-    this.resultLayer = undefined;
+    if (kind === "moves") {
+      this.resultLayer?.destroy(true);
+      this.resultLayer = undefined;
+      this.resultShown = false;
+    }
 
     this.renderUi();
     audioDirector.play("adReward");
     this.cameras.main.flash(180, 255, 255, 255);
-    this.showFloatingText(this.scale.width / 2, this.headerHeight() + 20, `步数 +${this.adBonusMoves}`, 0x1f7a5c);
+    this.showFloatingText(
+      this.scale.width / 2,
+      this.headerHeight() + 20,
+      kind === "moves" ? `步数 +${this.adBonusMoves}` : "提示 +1",
+      0x1f7a5c,
+    );
   }
 
   private showAdNotice(label: string): void {
@@ -1487,68 +1805,148 @@ export class LevelScene extends Phaser.Scene {
   }
 
   private checkResult(): void {
+    if (this.resultShown) {
+      return;
+    }
+
     if (this.goalSystem.isComplete) {
       this.showResult(true);
       return;
     }
 
-    if (this.movesLeft <= 0) {
+    if (this.timeRemaining <= 0 || this.movesLeft <= 0) {
       this.showResult(false);
     }
   }
 
   private showResult(won: boolean): void {
+    if (this.resultShown) {
+      return;
+    }
+
     const { width, height } = this.scale;
-    const canContinueWithAd = !won && this.canOfferRewardedAd(true);
+    const canContinueWithAd = !won && this.movesLeft <= 0 && this.timeRemaining > 0 && this.canOfferRewardedAd("moves", true);
+    const reward = won ? recordLevelWin(this.level.id, this.score) : undefined;
+    this.resultShown = true;
     audioDirector.play(won ? "win" : "lose");
+    if (won) {
+      this.playVictoryCelebration();
+    }
+
     this.resultLayer?.destroy(true);
     this.resultLayer = this.add.container(0, 0).setDepth(50);
 
-    const blocker = this.add.rectangle(0, 0, width, height, 0x17342d, 0.36).setOrigin(0, 0);
+    const blocker = this.add.rectangle(0, 0, width, height, won ? 0x17342d : 0x17342d, won ? 0.24 : 0.42).setOrigin(0, 0);
+    blocker.setInteractive();
     const panelWidth = Math.min(width - 36, 360);
-    const panelHeight = canContinueWithAd ? 252 : 220;
+    const panelHeight = won ? 292 : canContinueWithAd ? 282 : 248;
     const graphics = this.add.graphics();
-    graphics.fillStyle(0xffffff, 0.98);
+    graphics.fillStyle(won ? 0xfffffb : 0xffffff, 0.98);
     graphics.fillRoundedRect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, 8);
-    graphics.lineStyle(1, 0x1f3c33, 0.12);
+    graphics.lineStyle(2, won ? 0xffc247 : 0x1f3c33, won ? 0.45 : 0.12);
     graphics.strokeRoundedRect(-panelWidth / 2 + 0.5, -panelHeight / 2 + 0.5, panelWidth - 1, panelHeight - 1, 8);
 
     const title = this.add
-      .text(0, -68, won ? "浮岛复苏" : "还差一点", {
+      .text(0, -panelHeight / 2 + 42, won ? "修复成功！" : "还差一点", {
         fontFamily: "Microsoft YaHei, sans-serif",
-        fontSize: "28px",
-        color: "#1f3c33",
+        fontSize: won ? "30px" : "28px",
+        color: won ? "#d76d33" : "#1f3c33",
         fontStyle: "700",
       })
       .setOrigin(0.5);
 
-    const score = this.add
-      .text(0, -20, `得分 ${this.score}`, {
+    const detailText = won
+      ? `浮岛「${this.level.name}」完成修复\n钻石 +${reward?.diamondsEarned ?? 0} · 总进度 ${reward?.overallPercent ?? overallRepairPercent()}%`
+      : this.timeRemaining <= 0
+        ? "时间到了，但路线判断已经越来越稳了\n下一局先找目标棋子，会更容易过关"
+        : "只差最后几步，已经很接近了\n试试先处理目标棋子密集的一侧";
+    const detail = this.add
+      .text(0, -panelHeight / 2 + 94, detailText, {
         fontFamily: "Microsoft YaHei, sans-serif",
-        fontSize: "20px",
-        color: "#4b6b5f",
+        fontSize: "16px",
+        color: won ? "#4b6b5f" : "#5e6f67",
+        align: "center",
+        lineSpacing: 7,
       })
       .setOrigin(0.5);
 
-    const actionY = canContinueWithAd ? 70 : 48;
-    const retryX = canContinueWithAd ? 70 : 0;
-    const action = this.createSmallButton(retryX, actionY, won ? "再玩一关" : "重试", () => {
+    const score = this.add
+      .text(0, won ? 16 : -2, won ? `得分 ${this.score}    钻石 ${reward?.totalDiamonds ?? 0}` : `得分 ${this.score}`, {
+        fontFamily: "Microsoft YaHei, sans-serif",
+        fontSize: "20px",
+        color: won ? "#1f7a5c" : "#4b6b5f",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+
+    const children: Phaser.GameObjects.GameObject[] = [graphics, title, detail, score];
+    const actionY = panelHeight / 2 - 44;
+    const primaryLabel = won
+      ? LEVELS.indexOf(this.level) >= LEVELS.length - 1 ? "回主页" : "下一关"
+      : "重试";
+    const primaryX = won || canContinueWithAd ? 72 : -58;
+    const action = this.createSmallButton(primaryX, actionY, primaryLabel, () => {
       const currentIndex = LEVELS.indexOf(this.level);
-      const nextIndex = won ? (currentIndex + 1) % LEVELS.length : currentIndex;
+      if (won && currentIndex >= LEVELS.length - 1) {
+        this.scene.start("HomeScene");
+        return;
+      }
+
+      const nextIndex = won ? currentIndex + 1 : currentIndex;
       this.scene.restart({ levelIndex: nextIndex });
     });
-    const children: Phaser.GameObjects.GameObject[] = [graphics, title, score];
 
     if (canContinueWithAd) {
       const continueButton = this.createSmallButton(-70, actionY, `广告+${this.adBonusMoves}步`, () =>
-        this.showRewardedAdPrompt(),
+        this.showRewardedAdPrompt("moves"),
       );
       children.push(continueButton);
     }
 
+    if (won) {
+      const islandButton = this.createSmallButton(-72, actionY, "看浮岛", () => this.showIslandStatus());
+      children.push(islandButton);
+    } else if (!canContinueWithAd) {
+      const homeButton = this.createSmallButton(58, actionY, "主页", () => this.scene.start("HomeScene"));
+      children.push(homeButton);
+    }
+
     children.push(action);
     const panel = this.add.container(width / 2, height / 2, children);
+    panel.setScale(0.92);
     this.resultLayer.add([blocker, panel]);
+    this.tweens.add({
+      targets: panel,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 190,
+      ease: "Back.easeOut",
+    });
+  }
+
+  private playVictoryCelebration(): void {
+    const layer = this.ensureFeedbackLayer();
+    const { width, height } = this.scale;
+    this.cameras.main.flash(260, 255, 240, 166);
+
+    for (let index = 0; index < 34; index += 1) {
+      const color = [0xffc247, 0xf0649b, 0x5d9f5b, 0x8a72f0][index % 4];
+      const startX = Phaser.Math.Between(20, Math.max(24, width - 20));
+      const confetti = this.add.rectangle(startX, -20, 8, 14, color, 0.95);
+      confetti.setAngle(Phaser.Math.Between(-30, 30));
+      layer.add(confetti);
+      this.tweens.add({
+        targets: confetti,
+        y: height * Phaser.Math.FloatBetween(0.34, 0.82),
+        x: startX + Phaser.Math.Between(-48, 48),
+        angle: confetti.angle + Phaser.Math.Between(160, 360),
+        alpha: 0,
+        delay: index * 18,
+        duration: 920 + index * 12,
+        ease: "Cubic.easeOut",
+        onComplete: () => confetti.destroy(),
+      });
+    }
   }
 
   private formatTileCounts(counts: CountByTile): string[] {
@@ -1597,7 +1995,7 @@ export class LevelScene extends Phaser.Scene {
   }
 
   private headerHeight(): number {
-    return 112;
+    return 146;
   }
 
   private ensureFeedbackLayer(): Phaser.GameObjects.Container {
