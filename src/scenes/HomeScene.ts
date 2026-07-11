@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { audioDirector } from "../core/AudioDirector";
 
 export class HomeScene extends Phaser.Scene {
   private floatingTiles: Phaser.GameObjects.Image[] = [];
@@ -8,6 +9,7 @@ export class HomeScene extends Phaser.Scene {
   }
 
   create(): void {
+    audioDirector.startAmbience("home");
     this.scale.on("resize", this.layout, this);
     this.layout();
   }
@@ -114,7 +116,11 @@ export class HomeScene extends Phaser.Scene {
     container.setInteractive({ useHandCursor: true });
     container.on("pointerover", () => container.setScale(1.03));
     container.on("pointerout", () => container.setScale(1));
-    container.on("pointerdown", () => this.scene.start("LevelScene", { levelIndex: 0 }));
+    container.on("pointerdown", () => {
+      audioDirector.unlock();
+      audioDirector.play("ui");
+      this.scene.start("LevelScene", { levelIndex: 0 });
+    });
 
     return container;
   }

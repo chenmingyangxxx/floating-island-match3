@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { audioDirector } from "../core/AudioDirector";
 import { LEVELS } from "../data/levels";
 import { Board } from "../match3/Board";
 import { BoardResolver, type ResolveSummary, type ResolveStep } from "../match3/BoardResolver";
@@ -102,6 +103,7 @@ export class LevelScene extends Phaser.Scene {
   }
 
   create(): void {
+    audioDirector.startAmbience("level");
     this.scale.off("resize", this.layout, this);
     this.input.off("pointermove", this.handlePointerMove, this);
     this.input.off("pointerup", this.handlePointerUp, this);
@@ -266,7 +268,11 @@ export class LevelScene extends Phaser.Scene {
     container.setInteractive({ useHandCursor: true });
     container.on("pointerover", () => container.setScale(1.04));
     container.on("pointerout", () => container.setScale(1));
-    container.on("pointerdown", onClick);
+    container.on("pointerdown", () => {
+      audioDirector.unlock();
+      audioDirector.play("ui");
+      onClick();
+    });
     return container;
   }
 
@@ -461,6 +467,7 @@ export class LevelScene extends Phaser.Scene {
       return;
     }
 
+    audioDirector.unlock();
     const position = this.positionFromPoint(pointer.x, pointer.y, true);
     if (!position || !this.board.tileAt(position)) {
       this.selected = undefined;
@@ -543,6 +550,7 @@ export class LevelScene extends Phaser.Scene {
     }
 
     this.selected = undefined;
+    audioDirector.play("swap");
     this.flashCells([candidate.position, target], 0xfff0a6);
     void this.resolveMove(candidate.position, target);
   }
@@ -662,12 +670,14 @@ export class LevelScene extends Phaser.Scene {
     const from = this.selected;
     this.selected = undefined;
     this.renderBoard();
+    audioDirector.play("swap");
     this.flashCells([from, position], 0xfff0a6);
     void this.resolveMove(from, position);
   }
 
   private selectTile(position: Position): void {
     this.selected = position;
+    audioDirector.play("select");
     this.renderBoard();
     this.flashSelectableTiles(position);
   }
@@ -683,6 +693,7 @@ export class LevelScene extends Phaser.Scene {
     const summary = this.resolver.trySwapAndResolve(from, to, this.seasonSystem.current);
 
     if (!summary.accepted) {
+      audioDirector.play("invalid");
       await this.animateRejectedSwap(from, to);
       this.busy = false;
       this.renderBoard();
@@ -704,6 +715,7 @@ export class LevelScene extends Phaser.Scene {
     this.showRewardToast(summary);
 
     if (this.movesLeft <= 5 && !this.goalSystem.isComplete) {
+      audioDirector.play("lowMoves");
       this.showFloatingText(this.scale.width / 2, this.headerHeight() + 16, "步数告急", 0xd76d33);
     }
 
@@ -804,6 +816,7 @@ export class LevelScene extends Phaser.Scene {
       }
 
       this.flashCells(step.clearedTiles.map((cleared) => cleared.position), 0xfff0a6);
+      audioDirector.play("match");
       await this.animateMatchPaths(step);
       await this.animateSpecialEffects(step);
       await this.animateClearedTiles(step, index === 0);
@@ -1095,6 +1108,7 @@ export class LevelScene extends Phaser.Scene {
   }
 
   private showRewardToast(summary: ResolveSummary): void {
+    audioDirector.play("reward");
     const chips = [`+${summary.scoreGained} 分`];
     chips.push(...this.formatTileCounts(summary.collected));
 
@@ -1275,6 +1289,7 @@ export class LevelScene extends Phaser.Scene {
     }
 
     const { width, height } = this.scale;
+    audioDirector.play("adOpen");
     this.adLayer?.destroy(true);
     this.adLayer = this.add.container(0, 0).setDepth(70);
 
@@ -1403,6 +1418,7 @@ export class LevelScene extends Phaser.Scene {
     this.resultLayer = undefined;
 
     this.renderUi();
+    audioDirector.play("adReward");
     this.cameras.main.flash(180, 255, 255, 255);
     this.showFloatingText(this.scale.width / 2, this.headerHeight() + 20, `步数 +${this.adBonusMoves}`, 0x1f7a5c);
   }
@@ -1481,6 +1497,7 @@ export class LevelScene extends Phaser.Scene {
   private showResult(won: boolean): void {
     const { width, height } = this.scale;
     const canContinueWithAd = !won && this.canOfferRewardedAd(true);
+    audioDirector.play(won ? "win" : "lose");
     this.resultLayer?.destroy(true);
     this.resultLayer = this.add.container(0, 0).setDepth(50);
 
