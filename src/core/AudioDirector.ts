@@ -5,6 +5,7 @@ type SoundCue =
   | "swap"
   | "invalid"
   | "match"
+  | "matchBig"
   | "reward"
   | "lowMoves"
   | "win"
@@ -35,6 +36,7 @@ class AudioDirector {
   private musicGain?: GainNode;
   private sfxGain?: GainNode;
   private ambienceTimer?: number;
+  private musicStep = 0;
   private currentMood?: AmbienceMood;
   private unlocked = false;
 
@@ -80,10 +82,13 @@ class AudioDirector {
         this.noise(0.055, 0.025, 1200);
         break;
       case "invalid":
-        this.pluck([220, 185], 0.16, 0.05, "sawtooth");
+        this.softNegative();
         break;
       case "match":
-        this.pluck([620, 784, 988], 0.18, 0.045);
+        this.matchSparkle(false);
+        break;
+      case "matchBig":
+        this.matchSparkle(true);
         break;
       case "reward":
         this.pluck([523, 659, 784, 1046], 0.28, 0.04);
@@ -123,8 +128,8 @@ class AudioDirector {
     this.sfxGain = this.context.createGain();
 
     this.master.gain.value = 0.85;
-    this.musicGain.gain.value = 0.18;
-    this.sfxGain.gain.value = 0.5;
+    this.musicGain.gain.value = 0.22;
+    this.sfxGain.gain.value = 0.58;
     this.musicGain.connect(this.master);
     this.sfxGain.connect(this.master);
     this.master.connect(this.context.destination);
@@ -138,43 +143,51 @@ class AudioDirector {
 
     const mood = this.currentMood;
     const musicGain = this.musicGain;
-    const root = mood === "home" ? 261.63 : 293.66;
-    const chord = mood === "home" ? [1, 1.25, 1.5, 2] : [1, 1.2, 1.5, 1.875];
+    const progression = mood === "home"
+      ? [
+          [261.63, 329.63, 392, 523.25],
+          [293.66, 369.99, 440, 587.33],
+          [329.63, 392, 493.88, 659.25],
+          [246.94, 329.63, 392, 493.88],
+        ]
+      : [
+          [293.66, 369.99, 440, 587.33],
+          [329.63, 392, 493.88, 659.25],
+          [261.63, 329.63, 392, 523.25],
+          [349.23, 440, 523.25, 698.46],
+        ];
+    const chord = progression[this.musicStep % progression.length];
+    this.musicStep += 1;
 
-    chord.forEach((ratio, index) => {
+    chord.forEach((frequency, index) => {
       this.tone({
-        frequency: root * ratio,
+        frequency,
         duration: 4.2,
         delay: index * 0.08,
-        volume: 0.032,
+        volume: 0.026,
         type: "sine",
         attack: 0.65,
         release: 1.7,
       }, musicGain);
     });
 
-    const sparkleBase = mood === "home" ? 880 : 740;
-    this.tone({
-      frequency: sparkleBase,
-      duration: 0.35,
-      delay: 1.0,
-      volume: 0.025,
-      type: "triangle",
-      attack: 0.02,
-      release: 0.3,
-    }, musicGain);
-    this.tone({
-      frequency: sparkleBase * 1.5,
-      duration: 0.28,
-      delay: 1.24,
-      volume: 0.018,
-      type: "triangle",
-      attack: 0.02,
-      release: 0.24,
-    }, musicGain);
-    this.noise(2.2, 0.015, 650, musicGain, 0.45);
+    const melody = mood === "home"
+      ? [659.25, 783.99, 880, 783.99, 659.25, 587.33, 659.25, 523.25]
+      : [587.33, 659.25, 783.99, 880, 783.99, 659.25, 587.33, 659.25];
+    melody.forEach((frequency, index) => {
+      this.tone({
+        frequency,
+        duration: 0.28,
+        delay: 0.26 + index * 0.32,
+        volume: 0.024,
+        type: "triangle",
+        attack: 0.012,
+        release: 0.18,
+      }, musicGain);
+    });
+    this.noise(2.8, 0.012, 720, musicGain, 0.35);
 
-    this.ambienceTimer = window.setTimeout(() => this.scheduleAmbience(), mood === "home" ? 5600 : 5200);
+    this.ambienceTimer = window.setTimeout(() => this.scheduleAmbience(), 3400);
   }
 
   private stopAmbienceLoop(): void {
@@ -206,6 +219,63 @@ class AudioDirector {
         release: Math.max(0.06, duration * 0.65),
       }, sfxGain);
     });
+  }
+
+  private matchSparkle(big: boolean): void {
+    if (!this.context || !this.sfxGain) {
+      return;
+    }
+
+    const sfxGain = this.sfxGain;
+    const notes = big ? [659.25, 830.61, 987.77, 1318.51] : [659.25, 783.99, 987.77];
+    notes.forEach((frequency, index) => {
+      this.tone({
+        frequency,
+        duration: big ? 0.34 : 0.26,
+        delay: index * 0.055,
+        volume: big ? 0.07 : 0.06,
+        type: "triangle",
+        attack: 0.006,
+        release: big ? 0.28 : 0.22,
+      }, sfxGain);
+    });
+
+    this.tone({
+      frequency: big ? 1760 : 1567.98,
+      duration: 0.16,
+      delay: 0.17,
+      volume: big ? 0.045 : 0.038,
+      type: "sine",
+      attack: 0.004,
+      release: 0.16,
+    }, sfxGain);
+    this.noise(big ? 0.22 : 0.16, big ? 0.035 : 0.026, 3600, sfxGain, 0.03);
+  }
+
+  private softNegative(): void {
+    if (!this.context || !this.sfxGain) {
+      return;
+    }
+
+    const sfxGain = this.sfxGain;
+    this.tone({
+      frequency: 246.94,
+      duration: 0.11,
+      volume: 0.025,
+      type: "triangle",
+      attack: 0.006,
+      release: 0.08,
+    }, sfxGain);
+    this.tone({
+      frequency: 196,
+      duration: 0.13,
+      delay: 0.055,
+      volume: 0.02,
+      type: "sine",
+      attack: 0.006,
+      release: 0.1,
+    }, sfxGain);
+    this.noise(0.08, 0.012, 420, sfxGain);
   }
 
   private tone(options: ToneOptions, destination: AudioNode): void {

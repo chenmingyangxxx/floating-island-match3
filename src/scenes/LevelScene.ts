@@ -816,7 +816,10 @@ export class LevelScene extends Phaser.Scene {
       }
 
       this.flashCells(step.clearedTiles.map((cleared) => cleared.position), 0xfff0a6);
-      audioDirector.play("match");
+      const isLargeMatch = step.clearedTiles.length >= 4
+        || step.matches.length > 1
+        || step.matches.some((match) => match.runs.length > 1);
+      audioDirector.play(isLargeMatch ? "matchBig" : "match");
       await this.animateMatchPaths(step);
       await this.animateSpecialEffects(step);
       await this.animateClearedTiles(step, index === 0);
