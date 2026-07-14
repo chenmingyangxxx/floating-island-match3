@@ -13,10 +13,180 @@
       content="GOLD AND GLORY：一款欧洲中世纪题材的英雄职业三消小游戏。"
     />
     <title>GOLD AND GLORY</title>
-    <script type="module" crossorigin src="/floating-island-match3/medieval/assets/index-CrQKqwaz.js"></script>
+    <style>
+      #game-loading {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #f3e4c3;
+        background: #080a0c;
+        opacity: 1;
+        visibility: visible;
+        transition: opacity 240ms ease;
+      }
+
+      #game-loading.is-hidden {
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 240ms ease, visibility 0s linear 240ms;
+      }
+
+      .game-loading__content {
+        width: min(72vw, 280px);
+        text-align: center;
+      }
+
+      .game-loading__spinner {
+        position: relative;
+        width: 46px;
+        height: 46px;
+        margin: 0 auto 18px;
+        border: 3px solid rgba(168, 145, 94, 0.24);
+        border-top-color: #d7b76d;
+        border-right-color: #8f713a;
+        border-radius: 50%;
+        animation: game-loading-spin 900ms linear infinite;
+      }
+
+      .game-loading__spinner::after {
+        position: absolute;
+        inset: 14px;
+        content: "";
+        background: #d7b76d;
+        border: 1px solid #f2d893;
+        transform: rotate(45deg);
+      }
+
+      .game-loading__brand {
+        margin-bottom: 6px;
+        color: #d8bd82;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      #game-loading-status {
+        min-height: 20px;
+        color: #b9ad96;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 13px;
+      }
+
+      .game-loading__track {
+        height: 8px;
+        margin-top: 13px;
+        overflow: hidden;
+        background: #161a1c;
+        border: 1px solid #4d4537;
+        border-radius: 2px;
+      }
+
+      #game-loading-fill {
+        width: 0;
+        height: 100%;
+        background: #c6a459;
+        transform-origin: left center;
+        transition: width 120ms linear;
+      }
+
+      #game-loading-percent {
+        margin-top: 8px;
+        color: #f3e4c3;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 16px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+
+      @keyframes game-loading-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .game-loading__spinner { animation-duration: 1800ms; }
+      }
+    </style>
+    <script type="module" crossorigin src="/floating-island-match3/medieval/assets/index-Bx-WVhaT.js"></script>
     <link rel="stylesheet" crossorigin href="/floating-island-match3/medieval/assets/index-Dg0CN-9x.css">
   </head>
   <body>
+    <div id="game-loading" role="status" aria-live="polite" aria-label="游戏加载进度">
+      <div class="game-loading__content">
+        <div class="game-loading__spinner" aria-hidden="true"></div>
+        <div class="game-loading__brand">GOLD AND GLORY</div>
+        <div id="game-loading-status">正在整备远征</div>
+        <div class="game-loading__track" aria-hidden="true">
+          <div id="game-loading-fill"></div>
+        </div>
+        <div id="game-loading-percent">0%</div>
+      </div>
+    </div>
     <div id="game-root"></div>
+    <script>
+      (() => {
+        const root = document.getElementById("game-loading");
+        const status = document.getElementById("game-loading-status");
+        const fill = document.getElementById("game-loading-fill");
+        const percent = document.getElementById("game-loading-percent");
+        let displayed = 0;
+        let target = 4;
+        let ready = false;
+        let phaseTimer;
+        let animationFrame = 0;
+
+        const render = () => {
+          const value = Math.max(0, Math.min(100, Math.round(displayed)));
+          fill.style.width = `${value}%`;
+          percent.textContent = `${value}%`;
+          root.setAttribute("aria-label", `游戏加载进度 ${value}%`);
+        };
+
+        const animate = () => {
+          if (displayed < target) {
+            displayed = Math.min(target, displayed + Math.max(1, Math.ceil((target - displayed) * 0.18)));
+            render();
+          }
+          if (ready && displayed >= 100) {
+            animationFrame = 0;
+            window.setTimeout(() => root.classList.add("is-hidden"), 120);
+            return;
+          }
+          animationFrame = window.requestAnimationFrame(animate);
+        };
+
+        window.__GAME_LOADING__ = {
+          begin(label = "正在整备远征", startAt = 0) {
+            window.clearInterval(phaseTimer);
+            displayed = Math.max(0, Math.min(100, startAt));
+            target = displayed;
+            ready = false;
+            status.textContent = label;
+            root.classList.remove("is-hidden");
+            render();
+            if (!animationFrame) animationFrame = window.requestAnimationFrame(animate);
+          },
+          set(value, label) {
+            target = Math.max(target, Math.max(0, Math.min(100, value)));
+            if (label) status.textContent = label;
+          },
+          complete() {
+            window.clearInterval(phaseTimer);
+            target = 100;
+            ready = true;
+          },
+        };
+
+        phaseTimer = window.setInterval(() => {
+          target = Math.min(12, target + 1);
+        }, 220);
+        render();
+        animationFrame = window.requestAnimationFrame(animate);
+      })();
+    </script>
   </body>
 </html>
