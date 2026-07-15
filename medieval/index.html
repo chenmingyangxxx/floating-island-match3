@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
     <meta name="theme-color" content="#08090a" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="GOLD AND GLORY" />
@@ -111,8 +114,8 @@
         .game-loading__spinner { animation-duration: 1800ms; }
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-CXFyP1Ci.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Dg0CN-9x.css">
+    <script type="module" crossorigin src="./assets/index-BfFqWSj-.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Dg0CN-9x.css">
   </head>
   <body>
     <div id="game-loading" role="status" aria-live="polite" aria-label="游戏加载进度">
@@ -138,6 +141,27 @@
         let ready = false;
         let phaseTimer;
         let animationFrame = 0;
+        let bootRetryTimer;
+
+        window.__GAME_BOOT_STARTED__ = false;
+
+        const clearBootRetry = () => window.clearTimeout(bootRetryTimer);
+        const recoverStaleBundle = () => {
+          if (window.__GAME_BOOT_STARTED__) return;
+
+          const url = new URL(window.location.href);
+          if (!url.searchParams.has("boot-retry")) {
+            status.textContent = "正在更新远征资源";
+            url.searchParams.set("boot-retry", Date.now().toString());
+            window.location.replace(url.toString());
+            return;
+          }
+
+          status.textContent = "资源更新失败，请检查网络后刷新";
+        };
+
+        window.addEventListener("game-boot-started", clearBootRetry, { once: true });
+        bootRetryTimer = window.setTimeout(recoverStaleBundle, 8000);
 
         const render = () => {
           const value = Math.max(0, Math.min(100, Math.round(displayed)));
@@ -176,6 +200,7 @@
           },
           complete() {
             window.clearInterval(phaseTimer);
+            clearBootRetry();
             target = 100;
             ready = true;
           },
