@@ -45,9 +45,15 @@
 
       .game-loading__spinner {
         position: relative;
-        width: 46px;
-        height: 46px;
+        width: 52px;
+        height: 52px;
         margin: 0 auto 18px;
+      }
+
+      .game-loading__ring {
+        position: absolute;
+        inset: 0;
+        box-sizing: border-box;
         border: 3px solid rgba(168, 145, 94, 0.24);
         border-top-color: #d7b76d;
         border-right-color: #8f713a;
@@ -55,13 +61,14 @@
         animation: game-loading-spin 900ms linear infinite;
       }
 
-      .game-loading__spinner::after {
+      .game-loading__icon {
         position: absolute;
-        inset: 14px;
-        content: "";
-        background: #d7b76d;
-        border: 1px solid #f2d893;
-        transform: rotate(45deg);
+        top: 50%;
+        left: 50%;
+        width: 28px;
+        height: 28px;
+        object-fit: contain;
+        transform: translate(-50%, -50%);
       }
 
       .game-loading__brand {
@@ -111,16 +118,19 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .game-loading__spinner { animation-duration: 1800ms; }
+        .game-loading__ring { animation-duration: 1800ms; }
       }
     </style>
-    <script type="module" crossorigin src="./assets/index-BN7jLDF_.js"></script>
+    <script type="module" crossorigin src="./assets/index-CUOu-IEF.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-B6IhRFK2.css">
   </head>
   <body>
     <div id="game-loading" role="status" aria-live="polite" aria-label="游戏加载进度">
       <div class="game-loading__content">
-        <div class="game-loading__spinner" aria-hidden="true"></div>
+        <div class="game-loading__spinner" aria-hidden="true">
+          <span class="game-loading__ring"></span>
+          <img class="game-loading__icon" src="assets/medieval/ui/loading-icon.png" alt="" />
+        </div>
         <div class="game-loading__brand">GOLD AND GLORY</div>
         <div id="game-loading-status">正在整备远征</div>
         <div class="game-loading__track" aria-hidden="true">
